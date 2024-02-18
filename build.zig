@@ -1255,4 +1255,9 @@ const llvm_libs = [_][]const u8{
     "LLVMTargetParser",
     "LLVMSupport",
     "LLVMDemangle",
+    "LLVMXtensaAsmParser",
+    "LLVMXtensaDesc",
+    "LLVMXtensaInfo",
+    "LLVMXtensaCodeGen",
+    "LLVMXtensaDisassembler",
 };
