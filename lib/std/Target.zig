@@ -1314,6 +1314,7 @@ pub const Cpu = struct {
         fn allCpusFromDecls(comptime cpus: type) []const *const Cpu.Model {
             const decls = @typeInfo(cpus).Struct.decls;
             var array: [decls.len]*const Cpu.Model = undefined;
+            @setEvalBranchQuota(2000);
             for (decls, 0..) |decl, i| {
                 array[i] = &@field(cpus, decl.name);
             }
