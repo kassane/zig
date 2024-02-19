@@ -116,7 +116,7 @@ pub const all_features = blk: {
     };
     result[@intFromEnum(Feature.hifi3)] = .{
         .llvm_name = "hifi3",
-        .description = "Enable Xtensa HIFI3 option",
+        .description = "Enable Xtensa HIFI3 instructions",
         .dependencies = featureSet(&[_]Feature{}),
     };
     result[@intFromEnum(Feature.highpriinterrupts)] = .{
@@ -223,10 +223,36 @@ pub const all_features = blk: {
 };
 
 pub const cpu = struct {
-    pub const generic = CpuModel{
-        .name = "generic",
-        .llvm_name = "generic",
-        .features = featureSet(&[_]Feature{}),
+    pub const cnl = CpuModel{
+        .name = "cnl",
+        .llvm_name = "cnl",
+        .features = featureSet(&[_]Feature{
+            .atomctl,
+            .bool,
+            .coprocessor,
+            .debug,
+            .density,
+            .div32,
+            .exception,
+            .fp,
+            .hifi3,
+            .highpriinterrupts,
+            .interrupt,
+            .loop,
+            .memctl,
+            .miscsr,
+            .mul32,
+            .mul32high,
+            .nsa,
+            .prid,
+            .regprotect,
+            .rvector,
+            .s32c1i,
+            .sext,
+            .threadptr,
+            .timerint,
+            .windowed,
+        }),
     };
     pub const esp32 = CpuModel{
         .name = "esp32",
@@ -346,5 +372,10 @@ pub const cpu = struct {
             .rvector,
             .timerint,
         }),
+    };
+    pub const generic = CpuModel{
+        .name = "generic",
+        .llvm_name = "generic",
+        .features = featureSet(&[_]Feature{}),
     };
 };
