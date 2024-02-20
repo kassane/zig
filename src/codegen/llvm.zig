@@ -11905,7 +11905,7 @@ pub fn initializeLLVMTarget(arch: std.Target.Cpu.Arch) void {
                 llvm.LLVMInitializeXtensaTarget();
                 llvm.LLVMInitializeXtensaTargetInfo();
                 llvm.LLVMInitializeXtensaTargetMC();
-                // There is no LLVMInitializeXtensaAsmPrinter function.
+                llvm.LLVMInitializeXtensaAsmPrinter();
                 llvm.LLVMInitializeXtensaAsmParser();
             }
         },
