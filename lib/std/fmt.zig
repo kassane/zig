@@ -911,8 +911,11 @@ fn formatSizeImpl(comptime base: comptime_int) type {
                 else => unreachable,
             };
 
-            const s = formatFloat(&buf, new_value, .{ .mode = .decimal, .precision = options.precision }) catch |err| switch (err) {
-                error.BufferTooSmall => unreachable,
+            const s = switch (magnitude) {
+                0 => buf[0..formatIntBuf(&buf, value, 10, .lower, .{})],
+                else => formatFloat(&buf, new_value, .{ .mode = .decimal, .precision = options.precision }) catch |err| switch (err) {
+                    error.BufferTooSmall => unreachable,
+                },
             };
 
             var i: usize = s.len;
@@ -1836,6 +1839,8 @@ test comptimePrint {
     try std.testing.expectEqualSlices(u8, "100", comptimePrint("{}", .{100}));
     try std.testing.expectEqualStrings("30", comptimePrint("{d}", .{30.0}));
     try std.testing.expectEqualStrings("30.0", comptimePrint("{d:3.1}", .{30.0}));
+    try std.testing.expectEqualStrings("0.05", comptimePrint("{d}", .{0.05}));
+    try std.testing.expectEqualStrings("5e-2", comptimePrint("{e}", .{0.05}));
 }
 
 test "parse u64 digit too big" {
@@ -2096,6 +2101,8 @@ test "filesize" {
     try expectFmt("file size: 42B\n", "file size: {}\n", .{fmtIntSizeBin(42)});
     try expectFmt("file size: 63MB\n", "file size: {}\n", .{fmtIntSizeDec(63 * 1000 * 1000)});
     try expectFmt("file size: 63MiB\n", "file size: {}\n", .{fmtIntSizeBin(63 * 1024 * 1024)});
+    try expectFmt("file size: 42B\n", "file size: {:.2}\n", .{fmtIntSizeDec(42)});
+    try expectFmt("file size:       42B\n", "file size: {:>9.2}\n", .{fmtIntSizeDec(42)});
     try expectFmt("file size: 66.06MB\n", "file size: {:.2}\n", .{fmtIntSizeDec(63 * 1024 * 1024)});
     try expectFmt("file size: 60.08MiB\n", "file size: {:.2}\n", .{fmtIntSizeBin(63 * 1000 * 1000)});
     try expectFmt("file size: =66.06MB=\n", "file size: {:=^9.2}\n", .{fmtIntSizeDec(63 * 1024 * 1024)});
