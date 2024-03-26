@@ -3810,7 +3810,6 @@ pub const Object = struct {
             },
             .ptr => |ptr| return switch (ptr.addr) {
                 .decl => |decl| try o.lowerDeclRefValue(ty, decl),
-                .mut_decl => |mut_decl| try o.lowerDeclRefValue(ty, mut_decl.decl),
                 .anon_decl => |anon_decl| try o.lowerAnonDeclRef(ty, anon_decl),
                 .int => |int| try o.lowerIntAsPtr(int),
                 .eu_payload,
@@ -3818,7 +3817,7 @@ pub const Object = struct {
                 .elem,
                 .field,
                 => try o.lowerParentPtr(val),
-                .comptime_field => unreachable,
+                .comptime_field, .comptime_alloc => unreachable,
             },
             .slice => |slice| return o.builder.structConst(try o.lowerType(ty), &.{
                 try o.lowerValue(slice.ptr),
@@ -4276,7 +4275,6 @@ pub const Object = struct {
         const ptr = ip.indexToKey(ptr_val.toIntern()).ptr;
         return switch (ptr.addr) {
             .decl => |decl| try o.lowerParentPtrDecl(decl),
-            .mut_decl => |mut_decl| try o.lowerParentPtrDecl(mut_decl.decl),
             .anon_decl => |ad| try o.lowerAnonDeclRef(Type.fromInterned(ad.orig_ty), ad),
             .int => |int| try o.lowerIntAsPtr(int),
             .eu_payload => |eu_ptr| {
@@ -4313,7 +4311,7 @@ pub const Object = struct {
 
                 return o.builder.gepConst(.inbounds, try o.lowerType(opt_ty), parent_ptr, null, &.{ .@"0", .@"0" });
             },
-            .comptime_field => unreachable,
+            .comptime_field, .comptime_alloc => unreachable,
             .elem => |elem_ptr| {
                 const parent_ptr = try o.lowerParentPtr(Value.fromInterned(elem_ptr.base));
                 const elem_ty = Type.fromInterned(ip.typeOf(elem_ptr.base)).elemType2(mod);
@@ -5204,6 +5202,16 @@ pub const FuncGen = struct {
             self.prev_dbg_line,
             self.prev_dbg_column,
         );
+
+        switch (self.wip.debug_location) {
+            .location => |*l| l.scope = self.scope,
+            .no_location => {},
+        }
+        defer switch (self.wip.debug_location) {
+            .location => |*l| l.scope = old_scope,
+            .no_location => {},
+        };
+
         try self.genBody(body);
     }
 

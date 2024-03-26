@@ -1318,7 +1318,8 @@ pub const Cpu = struct {
             for (decls, 0..) |decl, i| {
                 array[i] = &@field(cpus, decl.name);
             }
-            return &array;
+            const finalized = array;
+            return &finalized;
         }
     };
 
