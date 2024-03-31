@@ -2035,7 +2035,7 @@ pub const Object = struct {
                     owner_decl.src_node + 1, // Line
                     try o.lowerDebugType(int_ty),
                     ty.abiSize(mod) * 8,
-                    ty.abiAlignment(mod).toByteUnits(0) * 8,
+                    (ty.abiAlignment(mod).toByteUnits() orelse 0) * 8,
                     try o.builder.debugTuple(enumerators),
                 );
 
@@ -2122,7 +2122,7 @@ pub const Object = struct {
                         0, // Line
                         try o.lowerDebugType(ptr_ty),
                         ptr_size * 8,
-                        ptr_align.toByteUnits(0) * 8,
+                        (ptr_align.toByteUnits() orelse 0) * 8,
                         0, // Offset
                     );
 
@@ -2133,7 +2133,7 @@ pub const Object = struct {
                         0, // Line
                         try o.lowerDebugType(len_ty),
                         len_size * 8,
-                        len_align.toByteUnits(0) * 8,
+                        (len_align.toByteUnits() orelse 0) * 8,
                         len_offset * 8,
                     );
 
@@ -2144,7 +2144,7 @@ pub const Object = struct {
                         line,
                         .none, // Underlying type
                         ty.abiSize(mod) * 8,
-                        ty.abiAlignment(mod).toByteUnits(0) * 8,
+                        (ty.abiAlignment(mod).toByteUnits() orelse 0) * 8,
                         try o.builder.debugTuple(&.{
                             debug_ptr_type,
                             debug_len_type,
@@ -2172,7 +2172,7 @@ pub const Object = struct {
                     0, // Line
                     debug_elem_ty,
                     target.ptrBitWidth(),
-                    ty.ptrAlignment(mod).toByteUnits(0) * 8,
+                    (ty.ptrAlignment(mod).toByteUnits() orelse 0) * 8,
                     0, // Offset
                 );
 
@@ -2219,7 +2219,7 @@ pub const Object = struct {
                     0, // Line
                     try o.lowerDebugType(ty.childType(mod)),
                     ty.abiSize(mod) * 8,
-                    ty.abiAlignment(mod).toByteUnits(0) * 8,
+                    (ty.abiAlignment(mod).toByteUnits() orelse 0) * 8,
                     try o.builder.debugTuple(&.{
                         try o.builder.debugSubrange(
                             try o.builder.debugConstant(try o.builder.intConst(.i64, 0)),
@@ -2262,7 +2262,7 @@ pub const Object = struct {
                     0, // Line
                     debug_elem_type,
                     ty.abiSize(mod) * 8,
-                    ty.abiAlignment(mod).toByteUnits(0) * 8,
+                    (ty.abiAlignment(mod).toByteUnits() orelse 0) * 8,
                     try o.builder.debugTuple(&.{
                         try o.builder.debugSubrange(
                             try o.builder.debugConstant(try o.builder.intConst(.i64, 0)),
@@ -2318,7 +2318,7 @@ pub const Object = struct {
                     0, // Line
                     try o.lowerDebugType(child_ty),
                     payload_size * 8,
-                    payload_align.toByteUnits(0) * 8,
+                    (payload_align.toByteUnits() orelse 0) * 8,
                     0, // Offset
                 );
 
@@ -2329,7 +2329,7 @@ pub const Object = struct {
                     0,
                     try o.lowerDebugType(non_null_ty),
                     non_null_size * 8,
-                    non_null_align.toByteUnits(0) * 8,
+                    (non_null_align.toByteUnits() orelse 0) * 8,
                     non_null_offset * 8,
                 );
 
@@ -2340,7 +2340,7 @@ pub const Object = struct {
                     0, // Line
                     .none, // Underlying type
                     ty.abiSize(mod) * 8,
-                    ty.abiAlignment(mod).toByteUnits(0) * 8,
+                    (ty.abiAlignment(mod).toByteUnits() orelse 0) * 8,
                     try o.builder.debugTuple(&.{
                         debug_data_type,
                         debug_some_type,
@@ -2398,7 +2398,7 @@ pub const Object = struct {
                     0, // Line
                     try o.lowerDebugType(Type.anyerror),
                     error_size * 8,
-                    error_align.toByteUnits(0) * 8,
+                    (error_align.toByteUnits() orelse 0) * 8,
                     error_offset * 8,
                 );
                 fields[payload_index] = try o.builder.debugMemberType(
@@ -2408,7 +2408,7 @@ pub const Object = struct {
                     0, // Line
                     try o.lowerDebugType(payload_ty),
                     payload_size * 8,
-                    payload_align.toByteUnits(0) * 8,
+                    (payload_align.toByteUnits() orelse 0) * 8,
                     payload_offset * 8,
                 );
 
@@ -2419,7 +2419,7 @@ pub const Object = struct {
                     0, // Line
                     .none, // Underlying type
                     ty.abiSize(mod) * 8,
-                    ty.abiAlignment(mod).toByteUnits(0) * 8,
+                    (ty.abiAlignment(mod).toByteUnits() orelse 0) * 8,
                     try o.builder.debugTuple(&fields),
                 );
 
@@ -2487,7 +2487,7 @@ pub const Object = struct {
                                 0,
                                 try o.lowerDebugType(Type.fromInterned(field_ty)),
                                 field_size * 8,
-                                field_align.toByteUnits(0) * 8,
+                                (field_align.toByteUnits() orelse 0) * 8,
                                 field_offset * 8,
                             ));
                         }
@@ -2499,7 +2499,7 @@ pub const Object = struct {
                             0, // Line
                             .none, // Underlying type
                             ty.abiSize(mod) * 8,
-                            ty.abiAlignment(mod).toByteUnits(0) * 8,
+                            (ty.abiAlignment(mod).toByteUnits() orelse 0) * 8,
                             try o.builder.debugTuple(fields.items),
                         );
 
@@ -2568,7 +2568,7 @@ pub const Object = struct {
                         0, // Line
                         try o.lowerDebugType(field_ty),
                         field_size * 8,
-                        field_align.toByteUnits(0) * 8,
+                        (field_align.toByteUnits() orelse 0) * 8,
                         field_offset * 8,
                     ));
                 }
@@ -2580,7 +2580,7 @@ pub const Object = struct {
                     0, // Line
                     .none, // Underlying type
                     ty.abiSize(mod) * 8,
-                    ty.abiAlignment(mod).toByteUnits(0) * 8,
+                    (ty.abiAlignment(mod).toByteUnits() orelse 0) * 8,
                     try o.builder.debugTuple(fields.items),
                 );
 
@@ -2623,7 +2623,7 @@ pub const Object = struct {
                         0, // Line
                         .none, // Underlying type
                         ty.abiSize(mod) * 8,
-                        ty.abiAlignment(mod).toByteUnits(0) * 8,
+                        (ty.abiAlignment(mod).toByteUnits() orelse 0) * 8,
                         try o.builder.debugTuple(
                             &.{try o.lowerDebugType(Type.fromInterned(union_type.enum_tag_ty))},
                         ),
@@ -2663,7 +2663,7 @@ pub const Object = struct {
                         0, // Line
                         try o.lowerDebugType(Type.fromInterned(field_ty)),
                         field_size * 8,
-                        field_align.toByteUnits(0) * 8,
+                        (field_align.toByteUnits() orelse 0) * 8,
                         0, // Offset
                     ));
                 }
@@ -2682,7 +2682,7 @@ pub const Object = struct {
                     0, // Line
                     .none, // Underlying type
                     ty.abiSize(mod) * 8,
-                    ty.abiAlignment(mod).toByteUnits(0) * 8,
+                    (ty.abiAlignment(mod).toByteUnits() orelse 0) * 8,
                     try o.builder.debugTuple(fields.items),
                 );
 
@@ -2713,7 +2713,7 @@ pub const Object = struct {
                     0, // Line
                     try o.lowerDebugType(Type.fromInterned(union_type.enum_tag_ty)),
                     layout.tag_size * 8,
-                    layout.tag_align.toByteUnits(0) * 8,
+                    (layout.tag_align.toByteUnits() orelse 0) * 8,
                     tag_offset * 8,
                 );
 
@@ -2724,7 +2724,7 @@ pub const Object = struct {
                     0, // Line
                     debug_union_type,
                     layout.payload_size * 8,
-                    layout.payload_align.toByteUnits(0) * 8,
+                    (layout.payload_align.toByteUnits() orelse 0) * 8,
                     payload_offset * 8,
                 );
 
@@ -2741,7 +2741,7 @@ pub const Object = struct {
                     0, // Line
                     .none, // Underlying type
                     ty.abiSize(mod) * 8,
-                    ty.abiAlignment(mod).toByteUnits(0) * 8,
+                    (ty.abiAlignment(mod).toByteUnits() orelse 0) * 8,
                     try o.builder.debugTuple(&full_fields),
                 );
 
@@ -4475,7 +4475,7 @@ pub const Object = struct {
         // The value cannot be undefined, because we use the `nonnull` annotation
         // for non-optional pointers. We also need to respect the alignment, even though
         // the address will never be dereferenced.
-        const int: u64 = ptr_ty.ptrInfo(mod).flags.alignment.toByteUnitsOptional() orelse
+        const int: u64 = ptr_ty.ptrInfo(mod).flags.alignment.toByteUnits() orelse
             // Note that these 0xaa values are appropriate even in release-optimized builds
             // because we need a well-defined value that is not null, and LLVM does not
             // have an "undef_but_not_null" attribute. As an example, if this `alloc` AIR
