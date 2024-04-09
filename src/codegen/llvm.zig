@@ -1013,7 +1013,7 @@ pub const Object = struct {
 
         llvm_errors[0] = try o.builder.undefConst(llvm_slice_ty);
         for (llvm_errors[1..], error_name_list[1..]) |*llvm_error, name| {
-            const name_string = try o.builder.stringNull(mod.intern_pool.stringToSlice(name));
+            const name_string = try o.builder.stringNull(name.toSlice(&mod.intern_pool));
             const name_init = try o.builder.stringConst(name_string);
             const name_variable_index =
                 try o.builder.addVariable(.empty, name_init.typeOf(&o.builder), .default);
@@ -1088,7 +1088,7 @@ pub const Object = struct {
         for (object.extern_collisions.keys()) |decl_index| {
             const global = object.decl_map.get(decl_index) orelse continue;
             // Same logic as below but for externs instead of exports.
-            const decl_name = object.builder.strtabStringIfExists(mod.intern_pool.stringToSlice(mod.declPtr(decl_index).name)) orelse continue;
+            const decl_name = object.builder.strtabStringIfExists(mod.declPtr(decl_index).name.toSlice(&mod.intern_pool)) orelse continue;
             const other_global = object.builder.getGlobal(decl_name) orelse continue;
             if (other_global.toConst().getBase(&object.builder) ==
                 global.toConst().getBase(&object.builder)) continue;
@@ -1118,7 +1118,7 @@ pub const Object = struct {
         for (export_list) |exp| {
             // Detect if the LLVM global has already been created as an extern. In such
             // case, we need to replace all uses of it with this exported global.
-            const exp_name = object.builder.strtabStringIfExists(mod.intern_pool.stringToSlice(exp.opts.name)) orelse continue;
+            const exp_name = object.builder.strtabStringIfExists(exp.opts.name.toSlice(&mod.intern_pool)) orelse continue;
 
             const other_global = object.builder.getGlobal(exp_name) orelse continue;
             if (other_global.toConst().getBase(&object.builder) == global_base) continue;
@@ -1444,7 +1444,7 @@ pub const Object = struct {
             } }, &o.builder);
         }
 
-        if (ip.stringToSliceUnwrap(decl.@"linksection")) |section|
+        if (decl.@"linksection".toSlice(ip)) |section|
             function_index.setSection(try o.builder.string(section), &o.builder);
 
         var deinit_wip = true;
@@ -1664,7 +1664,7 @@ pub const Object = struct {
 
             const subprogram = try o.builder.debugSubprogram(
                 file,
-                try o.builder.metadataString(ip.stringToSlice(decl.name)),
+                try o.builder.metadataString(decl.name.toSlice(ip)),
                 try o.builder.metadataStringFromStrtabString(function_index.name(&o.builder)),
                 line_number,
                 line_number + func.lbrace_line,
@@ -1754,6 +1754,7 @@ pub const Object = struct {
             .value => |val| return updateExportedValue(self, mod, val, exports),
         };
         const gpa = mod.gpa;
+        const ip = &mod.intern_pool;
         // If the module does not already have the function, we ignore this function call
         // because we call `updateExports` at the end of `updateFunc` and `updateDecl`.
         const global_index = self.decl_map.get(decl_index) orelse return;
@@ -1761,17 +1762,14 @@ pub const Object = struct {
         const comp = mod.comp;
         if (decl.isExtern(mod)) {
             const decl_name = decl_name: {
-                const decl_name = mod.intern_pool.stringToSlice(decl.name);
-
                 if (mod.getTarget().isWasm() and decl.val.typeOf(mod).zigTypeTag(mod) == .Fn) {
-                    if (mod.intern_pool.stringToSliceUnwrap(decl.getOwnedExternFunc(mod).?.lib_name)) |lib_name| {
+                    if (decl.getOwnedExternFunc(mod).?.lib_name.toSlice(ip)) |lib_name| {
                         if (!std.mem.eql(u8, lib_name, "c")) {
-                            break :decl_name try self.builder.strtabStringFmt("{s}|{s}", .{ decl_name, lib_name });
+                            break :decl_name try self.builder.strtabStringFmt("{}|{s}", .{ decl.name.fmt(ip), lib_name });
                         }
                     }
                 }
-
-                break :decl_name try self.builder.strtabString(decl_name);
+                break :decl_name try self.builder.strtabString(decl.name.toSlice(ip));
             };
 
             if (self.builder.getGlobal(decl_name)) |other_global| {
@@ -1794,9 +1792,7 @@ pub const Object = struct {
                 if (decl_var.is_weak_linkage) global_index.setLinkage(.extern_weak, &self.builder);
             }
         } else if (exports.len != 0) {
-            const main_exp_name = try self.builder.strtabString(
-                mod.intern_pool.stringToSlice(exports[0].opts.name),
-            );
+            const main_exp_name = try self.builder.strtabString(exports[0].opts.name.toSlice(ip));
             try global_index.rename(main_exp_name, &self.builder);
 
             if (decl.val.getVariable(mod)) |decl_var| if (decl_var.is_threadlocal)
@@ -1805,9 +1801,7 @@ pub const Object = struct {
 
             return updateExportedGlobal(self, mod, global_index, exports);
         } else {
-            const fqn = try self.builder.strtabString(
-                mod.intern_pool.stringToSlice(try decl.fullyQualifiedName(mod)),
-            );
+            const fqn = try self.builder.strtabString((try decl.fullyQualifiedName(mod)).toSlice(ip));
             try global_index.rename(fqn, &self.builder);
             global_index.setLinkage(.internal, &self.builder);
             if (comp.config.dll_export_fns)
@@ -1834,9 +1828,8 @@ pub const Object = struct {
         exports: []const *Module.Export,
     ) link.File.UpdateExportsError!void {
         const gpa = mod.gpa;
-        const main_exp_name = try o.builder.strtabString(
-            mod.intern_pool.stringToSlice(exports[0].opts.name),
-        );
+        const ip = &mod.intern_pool;
+        const main_exp_name = try o.builder.strtabString(exports[0].opts.name.toSlice(ip));
         const global_index = i: {
             const gop = try o.anon_decl_map.getOrPut(gpa, exported_value);
             if (gop.found_existing) {
@@ -1847,7 +1840,7 @@ pub const Object = struct {
             const llvm_addr_space = toLlvmAddressSpace(.generic, o.target);
             const variable_index = try o.builder.addVariable(
                 main_exp_name,
-                try o.lowerType(Type.fromInterned(mod.intern_pool.typeOf(exported_value))),
+                try o.lowerType(Type.fromInterned(ip.typeOf(exported_value))),
                 llvm_addr_space,
             );
             const global_index = variable_index.ptrConst(&o.builder).global;
@@ -1869,8 +1862,9 @@ pub const Object = struct {
         global_index: Builder.Global.Index,
         exports: []const *Module.Export,
     ) link.File.UpdateExportsError!void {
-        global_index.setUnnamedAddr(.default, &o.builder);
         const comp = mod.comp;
+        const ip = &mod.intern_pool;
+        global_index.setUnnamedAddr(.default, &o.builder);
         if (comp.config.dll_export_fns)
             global_index.setDllStorageClass(.dllexport, &o.builder);
         global_index.setLinkage(switch (exports[0].opts.linkage) {
@@ -1884,7 +1878,7 @@ pub const Object = struct {
             .hidden => .hidden,
             .protected => .protected,
         }, &o.builder);
-        if (mod.intern_pool.stringToSliceUnwrap(exports[0].opts.section)) |section|
+        if (exports[0].opts.section.toSlice(ip)) |section|
             switch (global_index.ptrConst(&o.builder).kind) {
                 .variable => |impl_index| impl_index.setSection(
                     try o.builder.string(section),
@@ -1902,7 +1896,7 @@ pub const Object = struct {
         // Until then we iterate over existing aliases and make them point
         // to the correct decl, or otherwise add a new alias. Old aliases are leaked.
         for (exports[1..]) |exp| {
-            const exp_name = try o.builder.strtabString(mod.intern_pool.stringToSlice(exp.opts.name));
+            const exp_name = try o.builder.strtabString(exp.opts.name.toSlice(ip));
             if (o.builder.getGlobal(exp_name)) |global| {
                 switch (global.ptrConst(&o.builder).kind) {
                     .alias => |alias| {
@@ -2015,7 +2009,7 @@ pub const Object = struct {
                         std.math.big.int.Mutable.init(&bigint_space.limbs, i).toConst();
 
                     enumerators[i] = try o.builder.debugEnumerator(
-                        try o.builder.metadataString(ip.stringToSlice(field_name_ip)),
+                        try o.builder.metadataString(field_name_ip.toSlice(ip)),
                         int_info.signedness == .unsigned,
                         int_info.bits,
                         bigint,
@@ -2475,7 +2469,7 @@ pub const Object = struct {
                             offset = field_offset + field_size;
 
                             const field_name = if (tuple.names.len != 0)
-                                ip.stringToSlice(tuple.names.get(ip)[i])
+                                tuple.names.get(ip)[i].toSlice(ip)
                             else
                                 try std.fmt.allocPrintZ(gpa, "{d}", .{i});
                             defer if (tuple.names.len == 0) gpa.free(field_name);
@@ -2559,10 +2553,10 @@ pub const Object = struct {
                     const field_offset = ty.structFieldOffset(field_index, mod);
 
                     const field_name = struct_type.fieldName(ip, field_index).unwrap() orelse
-                        try ip.getOrPutStringFmt(gpa, "{d}", .{field_index});
+                        try ip.getOrPutStringFmt(gpa, "{d}", .{field_index}, .no_embedded_nulls);
 
                     fields.appendAssumeCapacity(try o.builder.debugMemberType(
-                        try o.builder.metadataString(ip.stringToSlice(field_name)),
+                        try o.builder.metadataString(field_name.toSlice(ip)),
                         .none, // File
                         debug_fwd_ref,
                         0, // Line
@@ -2657,7 +2651,7 @@ pub const Object = struct {
 
                     const field_name = tag_type.names.get(ip)[field_index];
                     fields.appendAssumeCapacity(try o.builder.debugMemberType(
-                        try o.builder.metadataString(ip.stringToSlice(field_name)),
+                        try o.builder.metadataString(field_name.toSlice(ip)),
                         .none, // File
                         debug_union_fwd_ref,
                         0, // Line
@@ -2829,7 +2823,7 @@ pub const Object = struct {
         const mod = o.module;
         const decl = mod.declPtr(decl_index);
         return o.builder.debugStructType(
-            try o.builder.metadataString(mod.intern_pool.stringToSlice(decl.name)), // TODO use fully qualified name
+            try o.builder.metadataString(decl.name.toSlice(&mod.intern_pool)), // TODO use fully qualified name
             try o.getDebugFile(mod.namespacePtr(decl.src_namespace).file_scope),
             try o.namespaceToDebugScope(decl.src_namespace),
             decl.src_line + 1,
@@ -2846,11 +2840,11 @@ pub const Object = struct {
         const std_mod = mod.std_mod;
         const std_file = (mod.importPkg(std_mod) catch unreachable).file;
 
-        const builtin_str = try mod.intern_pool.getOrPutString(mod.gpa, "builtin");
+        const builtin_str = try mod.intern_pool.getOrPutString(mod.gpa, "builtin", .no_embedded_nulls);
         const std_namespace = mod.namespacePtr(mod.declPtr(std_file.root_decl.unwrap().?).src_namespace);
         const builtin_decl = std_namespace.decls.getKeyAdapted(builtin_str, Module.DeclAdapter{ .zcu = mod }).?;
 
-        const stack_trace_str = try mod.intern_pool.getOrPutString(mod.gpa, "StackTrace");
+        const stack_trace_str = try mod.intern_pool.getOrPutString(mod.gpa, "StackTrace", .no_embedded_nulls);
         // buffer is only used for int_type, `builtin` is a struct.
         const builtin_ty = mod.declPtr(builtin_decl).val.toType();
         const builtin_namespace = mod.namespacePtrUnwrap(builtin_ty.getNamespaceIndex(mod)).?;
@@ -2894,10 +2888,10 @@ pub const Object = struct {
         const is_extern = decl.isExtern(zcu);
         const function_index = try o.builder.addFunction(
             try o.lowerType(zig_fn_type),
-            try o.builder.strtabString(ip.stringToSlice(if (is_extern)
+            try o.builder.strtabString((if (is_extern)
                 decl.name
             else
-                try decl.fullyQualifiedName(zcu))),
+                try decl.fullyQualifiedName(zcu)).toSlice(ip)),
             toLlvmAddressSpace(decl.@"addrspace", target),
         );
         gop.value_ptr.* = function_index.ptrConst(&o.builder).global;
@@ -2912,9 +2906,9 @@ pub const Object = struct {
             if (target.isWasm()) {
                 try attributes.addFnAttr(.{ .string = .{
                     .kind = try o.builder.string("wasm-import-name"),
-                    .value = try o.builder.string(ip.stringToSlice(decl.name)),
+                    .value = try o.builder.string(decl.name.toSlice(ip)),
                 } }, &o.builder);
-                if (ip.stringToSliceUnwrap(decl.getOwnedExternFunc(zcu).?.lib_name)) |lib_name| {
+                if (decl.getOwnedExternFunc(zcu).?.lib_name.toSlice(ip)) |lib_name| {
                     if (!std.mem.eql(u8, lib_name, "c")) try attributes.addFnAttr(.{ .string = .{
                         .kind = try o.builder.string("wasm-import-module"),
                         .value = try o.builder.string(lib_name),
@@ -3110,9 +3104,10 @@ pub const Object = struct {
         const is_extern = decl.isExtern(mod);
 
         const variable_index = try o.builder.addVariable(
-            try o.builder.strtabString(mod.intern_pool.stringToSlice(
-                if (is_extern) decl.name else try decl.fullyQualifiedName(mod),
-            )),
+            try o.builder.strtabString((if (is_extern)
+                decl.name
+            else
+                try decl.fullyQualifiedName(mod)).toSlice(&mod.intern_pool)),
             try o.lowerType(decl.typeOf(mod)),
             toLlvmGlobalAddressSpace(decl.@"addrspace", mod.getTarget()),
         );
@@ -3260,7 +3255,7 @@ pub const Object = struct {
                     };
                 },
                 .array_type => |array_type| o.builder.arrayType(
-                    array_type.len + @intFromBool(array_type.sentinel != .none),
+                    array_type.lenIncludingSentinel(),
                     try o.lowerType(Type.fromInterned(array_type.child)),
                 ),
                 .vector_type => |vector_type| o.builder.vectorType(
@@ -3337,9 +3332,7 @@ pub const Object = struct {
                         return int_ty;
                     }
 
-                    const name = try o.builder.string(ip.stringToSlice(
-                        try mod.declPtr(struct_type.decl.unwrap().?).fullyQualifiedName(mod),
-                    ));
+                    const fqn = try mod.declPtr(struct_type.decl.unwrap().?).fullyQualifiedName(mod);
 
                     var llvm_field_types = std.ArrayListUnmanaged(Builder.Type){};
                     defer llvm_field_types.deinit(o.gpa);
@@ -3404,7 +3397,7 @@ pub const Object = struct {
                         );
                     }
 
-                    const ty = try o.builder.opaqueType(name);
+                    const ty = try o.builder.opaqueType(try o.builder.string(fqn.toSlice(ip)));
                     try o.type_map.put(o.gpa, t.toIntern(), ty);
 
                     o.builder.namedTypeSetBody(
@@ -3493,9 +3486,7 @@ pub const Object = struct {
                         return enum_tag_ty;
                     }
 
-                    const name = try o.builder.string(ip.stringToSlice(
-                        try mod.declPtr(union_obj.decl).fullyQualifiedName(mod),
-                    ));
+                    const fqn = try mod.declPtr(union_obj.decl).fullyQualifiedName(mod);
 
                     const aligned_field_ty = Type.fromInterned(union_obj.field_types.get(ip)[layout.most_aligned_field]);
                     const aligned_field_llvm_ty = try o.lowerType(aligned_field_ty);
@@ -3515,7 +3506,7 @@ pub const Object = struct {
                     };
 
                     if (layout.tag_size == 0) {
-                        const ty = try o.builder.opaqueType(name);
+                        const ty = try o.builder.opaqueType(try o.builder.string(fqn.toSlice(ip)));
                         try o.type_map.put(o.gpa, t.toIntern(), ty);
 
                         o.builder.namedTypeSetBody(
@@ -3543,7 +3534,7 @@ pub const Object = struct {
                         llvm_fields_len += 1;
                     }
 
-                    const ty = try o.builder.opaqueType(name);
+                    const ty = try o.builder.opaqueType(try o.builder.string(fqn.toSlice(ip)));
                     try o.type_map.put(o.gpa, t.toIntern(), ty);
 
                     o.builder.namedTypeSetBody(
@@ -3556,8 +3547,8 @@ pub const Object = struct {
                     const gop = try o.type_map.getOrPut(o.gpa, t.toIntern());
                     if (!gop.found_existing) {
                         const decl = mod.declPtr(ip.loadOpaqueType(t.toIntern()).decl);
-                        const name = try o.builder.string(ip.stringToSlice(try decl.fullyQualifiedName(mod)));
-                        gop.value_ptr.* = try o.builder.opaqueType(name);
+                        const fqn = try decl.fullyQualifiedName(mod);
+                        gop.value_ptr.* = try o.builder.opaqueType(try o.builder.string(fqn.toSlice(ip)));
                     }
                     return gop.value_ptr.*;
                 },
@@ -3861,7 +3852,9 @@ pub const Object = struct {
             },
             .aggregate => |aggregate| switch (ip.indexToKey(ty.toIntern())) {
                 .array_type => |array_type| switch (aggregate.storage) {
-                    .bytes => |bytes| try o.builder.stringConst(try o.builder.string(bytes)),
+                    .bytes => |bytes| try o.builder.stringConst(try o.builder.string(
+                        bytes.toSlice(array_type.lenIncludingSentinel(), ip),
+                    )),
                     .elems => |elems| {
                         const array_ty = try o.lowerType(ty);
                         const elem_ty = array_ty.childType(&o.builder);
@@ -3894,8 +3887,7 @@ pub const Object = struct {
                     },
                     .repeated_elem => |elem| {
                         const len: usize = @intCast(array_type.len);
-                        const len_including_sentinel: usize =
-                            @intCast(len + @intFromBool(array_type.sentinel != .none));
+                        const len_including_sentinel: usize = @intCast(array_type.lenIncludingSentinel());
                         const array_ty = try o.lowerType(ty);
                         const elem_ty = array_ty.childType(&o.builder);
 
@@ -3944,7 +3936,7 @@ pub const Object = struct {
                             defer allocator.free(vals);
 
                             switch (aggregate.storage) {
-                                .bytes => |bytes| for (vals, bytes) |*result_val, byte| {
+                                .bytes => |bytes| for (vals, bytes.toSlice(vector_type.len, ip)) |*result_val, byte| {
                                     result_val.* = try o.builder.intConst(.i8, byte);
                                 },
                                 .elems => |elems| for (vals, elems) |*result_val, elem| {
@@ -4635,7 +4627,7 @@ pub const Object = struct {
         defer wip_switch.finish(&wip);
 
         for (0..enum_type.names.len) |field_index| {
-            const name = try o.builder.stringNull(ip.stringToSlice(enum_type.names.get(ip)[field_index]));
+            const name = try o.builder.stringNull(enum_type.names.get(ip)[field_index].toSlice(ip));
             const name_init = try o.builder.stringConst(name);
             const name_variable_index =
                 try o.builder.addVariable(.empty, name_init.typeOf(&o.builder), .default);
@@ -4695,6 +4687,7 @@ pub const DeclGen = struct {
     fn genDecl(dg: *DeclGen) !void {
         const o = dg.object;
         const zcu = o.module;
+        const ip = &zcu.intern_pool;
         const decl = dg.decl;
         const decl_index = dg.decl_index;
         assert(decl.has_tv);
@@ -4707,7 +4700,7 @@ pub const DeclGen = struct {
                 decl.getAlignment(zcu).toLlvm(),
                 &o.builder,
             );
-            if (zcu.intern_pool.stringToSliceUnwrap(decl.@"linksection")) |section|
+            if (decl.@"linksection".toSlice(ip)) |section|
                 variable_index.setSection(try o.builder.string(section), &o.builder);
             assert(decl.has_tv);
             const init_val = if (decl.val.getVariable(zcu)) |decl_var| decl_var.init else init_val: {
@@ -4730,7 +4723,7 @@ pub const DeclGen = struct {
             const debug_file = try o.getDebugFile(namespace.file_scope);
 
             const debug_global_var = try o.builder.debugGlobalVar(
-                try o.builder.metadataString(zcu.intern_pool.stringToSlice(decl.name)), // Name
+                try o.builder.metadataString(decl.name.toSlice(ip)), // Name
                 try o.builder.metadataStringFromStrtabString(variable_index.name(&o.builder)), // Linkage name
                 debug_file, // File
                 debug_file, // Scope
@@ -5158,8 +5151,8 @@ pub const FuncGen = struct {
 
             self.scope = try o.builder.debugSubprogram(
                 self.file,
-                try o.builder.metadataString(zcu.intern_pool.stringToSlice(decl.name)),
-                try o.builder.metadataString(zcu.intern_pool.stringToSlice(fqn)),
+                try o.builder.metadataString(decl.name.toSlice(&zcu.intern_pool)),
+                try o.builder.metadataString(fqn.toSlice(&zcu.intern_pool)),
                 line_number,
                 line_number + func.lbrace_line,
                 try o.lowerDebugType(fn_ty),
