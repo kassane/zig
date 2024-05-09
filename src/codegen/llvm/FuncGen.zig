@@ -7212,7 +7212,7 @@ const ParamTypeIterator = struct {
                 };
                 return .byval; // TODO
             },
-            .riscv64_lp64, .riscv32_ilp32 => {
+            .riscv64_lp64 => {
                 it.zig_index += 1;
                 it.llvm_index += 1;
                 switch (riscv_c_abi.classifyType(ty, zcu)) {
@@ -7255,6 +7255,43 @@ const ParamTypeIterator = struct {
                         it.llvm_index += 1;
                         return .byref_mut;
                     },
+                }
+            },
+            .riscv32_ilp32 => {
+                it.zig_index += 1;
+                it.llvm_index += 1;
+                switch (riscv_c_abi.classifyType(ty, zcu)) {
+                    .memory => return .byref_mut,
+                    .byval => return .byval,
+                    .integer => return .abi_sized_int,
+                    // rv32: two pointer-width (32-bit) words, not two 64-bit words
+                    .double_integer => return Lowering{ .i32_array = 2 },
+                    .fields => {
+                        it.types_len = 0;
+                        var field_it: InternPool.LoadedStructType.RuntimeOrderIterator = if (zcu.typeToStruct(ty)) |loaded_struct|
+                            loaded_struct.iterateRuntimeOrder(&zcu.intern_pool)
+                        else
+                            .{ .runtime_order = null, .fields_len = ty.structFieldCount(zcu), .next_index = 0 };
+                        while (field_it.next()) |field_index| {
+                            const field_ty = ty.fieldType(field_index, zcu);
+                            if (!field_ty.hasRuntimeBits(zcu)) continue;
+                            it.types_buffer[it.types_len] = try it.object.lowerType(field_ty, .as_value);
+                            it.offsets_buffer[it.types_len] = ty.structFieldOffset(field_index, zcu);
+                            it.types_len += 1;
+                        }
+                        it.offsets_buffer[it.types_len] = ty.abiSize(zcu);
+                        it.llvm_index += it.types_len - 1;
+                        return .multiple_llvm_types;
+                    },
+                }
+            },
+            .xtensa_call0, .xtensa_windowed => {
+                it.zig_index += 1;
+                it.llvm_index += 1;
+                switch (xtensa_c_abi.classifyType(ty, zcu)) {
+                    .memory => return .byref_mut,
+                    .byval => return .byval,
+                    .i32_array => return Lowering{ .i32_array = xtensa_c_abi.i32Count(ty.abiSize(zcu)) },
                 }
             },
             .wasm_mvp => switch (wasm_c_abi.classifyTypeForLlvm(ty, zcu)) {
@@ -7608,6 +7645,14 @@ pub fn fnReturnStrat(o: *Object, cc: std.lang.CallingConvention, ret_ty: Type) A
             .double_or_float, .vector, .simple => .by_val,
             .simple_aggregate => unreachable,
             .pointer => .sret,
+        },
+        .xtensa_call0, .xtensa_windowed => switch (xtensa_c_abi.classifyType(ret_ty, zcu)) {
+            .memory => return .sret,
+            .byval => return .forceByVal(o, ret_ty),
+            .i32_array => {
+                const count = xtensa_c_abi.i32Count(ret_ty.abiSize(zcu));
+                return .{ .mem_cast = try o.builder.arrayType(count, .i32) };
+            },
         },
         .wasm_mvp => switch (wasm_c_abi.classifyTypeForLlvm(ret_ty, zcu)) {
             .direct => |scalar_ty| if (scalar_ty.toIntern() == ret_ty.toIntern()) {
@@ -8411,6 +8456,7 @@ const riscv_c_abi = @import("../riscv64/abi.zig");
 const s390x_c_abi = @import("../s390x/abi.zig");
 const wasm_c_abi = @import("../wasm/abi.zig");
 const x86_64_abi = @import("../x86_64/abi.zig");
+const xtensa_c_abi = @import("../xtensa/abi.zig");
 
 const Zcu = @import("../../Zcu.zig");
 const Air = @import("../../Air.zig");

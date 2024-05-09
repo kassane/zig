@@ -20,6 +20,20 @@ pub const Os = struct {
         other,
 
         contiki,
+        esp32,
+        esp32s2,
+        esp32s3,
+        esp8266,
+        esp32c2,
+        esp32c3,
+        esp32c5,
+        esp32c6,
+        esp32c61,
+        esp32h2,
+        esp32h21,
+        esp32h4,
+        esp32p4,
+        esp32s31,
         fuchsia,
         hermit,
         managarm,
@@ -172,6 +186,21 @@ pub const Os = struct {
                 .gba,
 
                 .emscripten,
+
+                .esp32,
+                .esp32s2,
+                .esp32s3,
+                .esp8266,
+                .esp32c2,
+                .esp32c3,
+                .esp32c5,
+                .esp32c6,
+                .esp32c61,
+                .esp32h2,
+                .esp32h21,
+                .esp32h4,
+                .esp32p4,
+                .esp32s31,
 
                 .mesa3d,
 
@@ -398,6 +427,21 @@ pub const Os = struct {
             return switch (tag) {
                 .freestanding,
                 .other,
+
+                .esp32,
+                .esp32s2,
+                .esp32s3,
+                .esp8266,
+                .esp32c2,
+                .esp32c3,
+                .esp32c5,
+                .esp32c6,
+                .esp32c61,
+                .esp32h2,
+                .esp32h21,
+                .esp32h4,
+                .esp32p4,
+                .esp32s31,
 
                 .managarm,
 
@@ -947,6 +991,20 @@ pub const Abi = enum {
             .ashetos => .eabi,
 
             .contiki,
+            .esp32,
+            .esp32s2,
+            .esp32s3,
+            .esp8266,
+            .esp32c2,
+            .esp32c3,
+            .esp32c5,
+            .esp32c6,
+            .esp32c61,
+            .esp32h2,
+            .esp32h21,
+            .esp32h4,
+            .esp32p4,
+            .esp32s31,
             .hermit,
             .illumos,
             .managarm,
@@ -1238,8 +1296,8 @@ pub const Cpu = struct {
         pub const Set = struct {
             ints: [usize_count]usize,
 
-            pub const needed_bit_count = 347;
-            pub const byte_count = @divCeil(needed_bit_count, 8);
+            pub const needed_bit_count = 360;
+            pub const byte_count = @divCeil(needed_bit_count + 7, 8);
             pub const usize_count = (byte_count + (@sizeOf(usize) - 1)) / @sizeOf(usize);
             pub const Index = std.math.Log2Int(@Int(.unsigned, usize_count * @bitSizeOf(usize)));
             pub const ShiftInt = std.math.Log2Int(usize);
@@ -2138,7 +2196,19 @@ pub const Cpu = struct {
                     else => generic(arch),
                 },
                 .powerpc64le => &powerpc.cpu.ppc64le,
-                .riscv32, .riscv32be => &riscv.cpu.baseline_rv32,
+                .riscv32, .riscv32be => switch (os.tag) {
+                    .esp32c2 => &riscv.cpu.esp32c2,
+                    .esp32c3 => &riscv.cpu.esp32c3,
+                    .esp32c5 => &riscv.cpu.esp32c5,
+                    .esp32c6 => &riscv.cpu.esp32c6,
+                    .esp32c61 => &riscv.cpu.esp32c61,
+                    .esp32h2 => &riscv.cpu.esp32h2,
+                    .esp32h21 => &riscv.cpu.esp32h21,
+                    .esp32h4 => &riscv.cpu.esp32h4,
+                    .esp32p4 => &riscv.cpu.esp32p4,
+                    .esp32s31 => &riscv.cpu.esp32s31,
+                    else => &riscv.cpu.baseline_rv32,
+                },
                 .riscv64, .riscv64be => &riscv.cpu.baseline_rv64,
                 .s390x => &s390x.cpu.arch11,
                 .sparc => switch (os.tag) {
@@ -2155,7 +2225,13 @@ pub const Cpu = struct {
                     else => generic(arch),
                 },
                 .xcore => &xcore.cpu.xs1b_generic,
-                .xtensa => &xtensa.cpu.esp32,
+                .xtensa => switch (os.tag) {
+                    .esp32 => &xtensa.cpu.esp32,
+                    .esp32s2 => &xtensa.cpu.esp32s2,
+                    .esp32s3 => &xtensa.cpu.esp32s3,
+                    .esp8266 => &xtensa.cpu.esp8266,
+                    else => &xtensa.cpu.esp32,
+                },
                 .wasm32, .wasm64 => &wasm.cpu.lime1,
 
                 else => generic(arch),
@@ -2329,6 +2405,20 @@ pub fn requiresLibC(target: *const Target) bool {
         .vita,
         .mesa3d,
         .contiki,
+        .esp32,
+        .esp32s2,
+        .esp32s3,
+        .esp8266,
+        .esp32c2,
+        .esp32c3,
+        .esp32c5,
+        .esp32c6,
+        .esp32c61,
+        .esp32h2,
+        .esp32h21,
+        .esp32h4,
+        .esp32p4,
+        .esp32s31,
         .amdpal,
         .hermit,
         .hurd,
@@ -2481,6 +2571,20 @@ pub const DynamicLinker = struct {
             .other,
 
             .contiki,
+            .esp32,
+            .esp32s2,
+            .esp32s3,
+            .esp8266,
+            .esp32c2,
+            .esp32c3,
+            .esp32c5,
+            .esp32c6,
+            .esp32c61,
+            .esp32h2,
+            .esp32h21,
+            .esp32h4,
+            .esp32p4,
+            .esp32s31,
             .hermit,
             .managarm, // Needs to be double-checked.
 
@@ -2922,6 +3026,20 @@ pub const DynamicLinker = struct {
             .other,
 
             .contiki,
+            .esp32,
+            .esp32s2,
+            .esp32s3,
+            .esp8266,
+            .esp32c2,
+            .esp32c3,
+            .esp32c5,
+            .esp32c6,
+            .esp32c61,
+            .esp32h2,
+            .esp32h21,
+            .esp32h4,
+            .esp32p4,
+            .esp32s31,
             .hermit,
 
             .plan9,
@@ -3566,6 +3684,27 @@ pub fn cTypeBitSize(target: *const Target, c_type: CType) ?u16 {
         .contiki,
         .managarm,
         => @panic("specify the C integer and float type sizes for this OS"),
+
+        .esp32,
+        .esp32s2,
+        .esp32s3,
+        .esp8266,
+        .esp32c2,
+        .esp32c3,
+        .esp32c5,
+        .esp32c6,
+        .esp32c61,
+        .esp32h2,
+        .esp32h21,
+        .esp32h4,
+        .esp32p4,
+        .esp32s31,
+        => switch (c_type) {
+            .char => return 8,
+            .short, .ushort => return 16,
+            .int, .uint, .float, .long, .ulong => return 32,
+            .longlong, .ulonglong, .double, .longdouble => return 64,
+        },
     };
 }
 

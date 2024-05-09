@@ -299,6 +299,11 @@ pub fn tripleForTarget(allocator: Allocator, target: *const std.Target) ![]const
         .gba,
         .ashetos,
         => "unknown",
+
+        .esp32, .esp32s2, .esp32s3, .esp8266,
+        .esp32c2, .esp32c3, .esp32c5, .esp32c6, .esp32c61,
+        .esp32h2, .esp32h21, .esp32h4, .esp32p4, .esp32s31,
+        => "espidf",
     };
     try llvm_triple.appendSlice(llvm_os);
 
@@ -560,7 +565,7 @@ pub const DataLayout = struct {
             .csky => "e-m:e-S32-p:32:32-i32:32:32-i64:32:32-f32:32:32-f64:32:32-v64:32:32-v128:32:32-a:0:32-Fi32-n32",
             .loongarch32 => "e-m:e-p:32:32-i64:64-n32-S128",
             .loongarch64 => "e-m:e-p:64:64-i64:64-i128:128-n32:64-S128",
-            .xtensa => "e-m:e-p:32:32-i8:8:32-i16:16:32-i64:64-n32",
+            .xtensa => "e-m:e-p:32:32-v1:8:8-i64:64-i128:128-n32",
 
             .alpha,
             .arceb,

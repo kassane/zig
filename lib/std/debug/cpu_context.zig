@@ -25,6 +25,7 @@ else switch (native_arch) {
     .x86_16 => X86_16,
     .x86 => X86,
     .x86_64 => X86_64,
+    .xtensa, .xtensaeb => Xtensa,
     else => noreturn,
 };
 
@@ -2200,17 +2201,14 @@ const signal_ucontext_t = switch (native_os) {
                 .xtensa, .xtensaeb => extern struct {
                     pc: u32,
                     _ps: u32,
-                    _l: extern struct {
-                        _beg: u32,
-                        _end: u32,
-                        _count: u32,
-                    },
+                    _lbeg: u32,
+                    _lend: u32,
+                    _lcount: u32,
                     _sar: u32,
-                    _acc: extern struct {
-                        _lo: u32,
-                        _hi: u32,
-                    },
+                    _acclo: u32,
+                    _acchi: u32,
                     a: [16]u32,
+                    _xtregs: u32, // void* to coprocessor save area
                 },
                 else => unreachable,
             },
@@ -2932,6 +2930,51 @@ const signal_ucontext_t = switch (native_os) {
         },
     },
     else => void,
+};
+
+const Xtensa = extern struct {
+    a: [16]u32,
+    pc: u32,
+
+    pub fn current() Xtensa {
+        var ctx: Xtensa = undefined;
+        ctx.pc = @returnAddress();
+        asm volatile (
+            \\s32i a0, %[base], 0
+            \\s32i a1, %[base], 4
+            \\s32i a2, %[base], 8
+            \\s32i a3, %[base], 12
+            \\s32i a4, %[base], 16
+            \\s32i a5, %[base], 20
+            \\s32i a6, %[base], 24
+            \\s32i a7, %[base], 28
+            \\s32i a8, %[base], 32
+            \\s32i a9, %[base], 36
+            \\s32i a10, %[base], 40
+            \\s32i a11, %[base], 44
+            \\s32i a12, %[base], 48
+            \\s32i a13, %[base], 52
+            \\s32i a14, %[base], 56
+            \\s32i a15, %[base], 60
+            :
+            : [base] "r" (&ctx.a[0]),
+            : "memory"
+        );
+        return ctx;
+    }
+
+    pub fn getFp(ctx: *const Xtensa) usize {
+        return ctx.a[15];
+    }
+
+    pub fn getPc(ctx: *const Xtensa) usize {
+        return ctx.pc;
+    }
+
+    pub fn dwarfRegisterBytes(ctx: *const Xtensa, reg_num: u8) ?[]const u8 {
+        if (reg_num > 15) return null;
+        return std.mem.asBytes(&ctx.a[reg_num]);
+    }
 };
 
 const std = @import("../std.zig");

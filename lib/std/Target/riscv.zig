@@ -16,6 +16,8 @@ pub const Feature = enum {
     b,
     bfext_fusion,
     c,
+    cm_popret,
+    cm_push_reverse,
     conditional_cmv_fusion,
     d,
     disable_latency_sched_heuristic,
@@ -26,6 +28,7 @@ pub const Feature = enum {
     dlen_factor_2,
     e,
     enable_vsetvli_sched_heuristic,
+    espv_lowering,
     exact_asm,
     experimental,
     experimental_p,
@@ -188,6 +191,11 @@ pub const Feature = enum {
     xcvmac,
     xcvmem,
     xcvsimd,
+    xespdsp,
+    xesploop,
+    xespv,
+    xespv2p1,
+    xespv2p2,
     xmipscbop,
     xmipscmov,
     xmipsexectl,
@@ -428,6 +436,16 @@ pub const all_features = blk: {
             .zca,
         }),
     };
+    result[@backingInt(Feature.cm_popret)] = .{
+        .llvm_name = "cm-popret",
+        .description = "Enable workaround for cm.popret/cm.popretz",
+        .dependencies = featureSet(&[_]Feature{}),
+    };
+    result[@backingInt(Feature.cm_push_reverse)] = .{
+        .llvm_name = "cm-push-reverse",
+        .description = "Enable workaround for cm.push/cm.pop register order",
+        .dependencies = featureSet(&[_]Feature{}),
+    };
     result[@backingInt(Feature.conditional_cmv_fusion)] = .{
         .llvm_name = "conditional-cmv-fusion",
         .description = "Enable branch+c.mv fusion",
@@ -478,6 +496,11 @@ pub const all_features = blk: {
     result[@backingInt(Feature.enable_vsetvli_sched_heuristic)] = .{
         .llvm_name = "enable-vsetvli-sched-heuristic",
         .description = "Enable vsetvli-based scheduling heuristic",
+        .dependencies = featureSet(&[_]Feature{}),
+    };
+    result[@backingInt(Feature.espv_lowering)] = .{
+        .llvm_name = "espv-lowering",
+        .description = "Enable Espressif ESPV target lowering (DAG/instruction selection)",
         .dependencies = featureSet(&[_]Feature{}),
     };
     result[@backingInt(Feature.exact_asm)] = .{
@@ -1601,6 +1624,33 @@ pub const all_features = blk: {
     result[@backingInt(Feature.xcvsimd)] = .{
         .llvm_name = "xcvsimd",
         .description = "'XCVsimd' (CORE-V SIMD ALU)",
+        .dependencies = featureSet(&[_]Feature{}),
+    };
+    result[@backingInt(Feature.xespdsp)] = .{
+        .llvm_name = "xespdsp",
+        .description = "'Xespdsp' ('Espressif ESPDSP')",
+        .dependencies = featureSet(&[_]Feature{}),
+    };
+    result[@backingInt(Feature.xesploop)] = .{
+        .llvm_name = "xesploop",
+        .description = "'Xesploop' ('Espressif ESPLOOP')",
+        .dependencies = featureSet(&[_]Feature{}),
+    };
+    result[@backingInt(Feature.xespv)] = .{
+        .llvm_name = "xespv",
+        .description = "'Xespv' ('Espressif ESPV 2.2')",
+        .dependencies = featureSet(&[_]Feature{
+            .xespv2p2,
+        }),
+    };
+    result[@backingInt(Feature.xespv2p1)] = .{
+        .llvm_name = "xespv2p1",
+        .description = "'Espressif ESPV 2.1'",
+        .dependencies = featureSet(&[_]Feature{}),
+    };
+    result[@backingInt(Feature.xespv2p2)] = .{
+        .llvm_name = "xespv2p2",
+        .description = "'Espressif ESPV 2.2'",
         .dependencies = featureSet(&[_]Feature{}),
     };
     result[@backingInt(Feature.xmipscbop)] = .{
@@ -2831,6 +2881,187 @@ pub const cpu = struct {
             .d,
             .i,
             .m,
+        }),
+    };
+    pub const esp32c2: CpuModel = .{
+        .name = "esp32c2",
+        .llvm_name = "esp32c2",
+        .features = featureSet(&[_]Feature{
+            .@"32bit",
+            .c,
+            .i,
+            .m,
+            .zicsr,
+            .zifencei,
+        }),
+    };
+    pub const esp32c3: CpuModel = .{
+        .name = "esp32c3",
+        .llvm_name = "esp32c3",
+        .features = featureSet(&[_]Feature{
+            .@"32bit",
+            .c,
+            .i,
+            .m,
+            .zicsr,
+            .zifencei,
+        }),
+    };
+    pub const esp32c5: CpuModel = .{
+        .name = "esp32c5",
+        .llvm_name = "esp32c5",
+        .features = featureSet(&[_]Feature{
+            .@"32bit",
+            .a,
+            .c,
+            .i,
+            .m,
+            .zcb,
+            .zcmt,
+            .zifencei,
+        }),
+    };
+    pub const esp32c6: CpuModel = .{
+        .name = "esp32c6",
+        .llvm_name = "esp32c6",
+        .features = featureSet(&[_]Feature{
+            .@"32bit",
+            .a,
+            .c,
+            .i,
+            .m,
+            .zicsr,
+            .zifencei,
+        }),
+    };
+    pub const esp32c61: CpuModel = .{
+        .name = "esp32c61",
+        .llvm_name = "esp32c61",
+        .features = featureSet(&[_]Feature{
+            .@"32bit",
+            .a,
+            .b,
+            .c,
+            .i,
+            .m,
+            .zbc,
+            .zcb,
+            .zcmt,
+            .zifencei,
+        }),
+    };
+    pub const esp32c61eco0: CpuModel = .{
+        .name = "esp32c61eco0",
+        .llvm_name = "esp32c61eco0",
+        .features = featureSet(&[_]Feature{
+            .@"32bit",
+            .a,
+            .c,
+            .i,
+            .m,
+            .zcb,
+            .zcmt,
+            .zifencei,
+        }),
+    };
+    pub const esp32h2: CpuModel = .{
+        .name = "esp32h2",
+        .llvm_name = "esp32h2",
+        .features = featureSet(&[_]Feature{
+            .@"32bit",
+            .a,
+            .c,
+            .i,
+            .m,
+            .zicsr,
+            .zifencei,
+        }),
+    };
+    pub const esp32h21: CpuModel = .{
+        .name = "esp32h21",
+        .llvm_name = "esp32h21",
+        .features = featureSet(&[_]Feature{
+            .@"32bit",
+            .a,
+            .c,
+            .i,
+            .m,
+            .zicsr,
+            .zifencei,
+        }),
+    };
+    pub const esp32h4: CpuModel = .{
+        .name = "esp32h4",
+        .llvm_name = "esp32h4",
+        .features = featureSet(&[_]Feature{
+            .@"32bit",
+            .a,
+            .b,
+            .c,
+            .f,
+            .i,
+            .m,
+            .xespdsp,
+            .xesploop,
+            .zbc,
+            .zcb,
+            .zcmt,
+            .zifencei,
+        }),
+    };
+    pub const esp32p4: CpuModel = .{
+        .name = "esp32p4",
+        .llvm_name = "esp32p4",
+        .features = featureSet(&[_]Feature{
+            .@"32bit",
+            .a,
+            .b,
+            .c,
+            .f,
+            .i,
+            .m,
+            .xesploop,
+            .xespv,
+            .zbc,
+            .zcb,
+            .zcmt,
+            .zifencei,
+        }),
+    };
+    pub const esp32p4eco4: CpuModel = .{
+        .name = "esp32p4eco4",
+        .llvm_name = "esp32p4eco4",
+        .features = featureSet(&[_]Feature{
+            .@"32bit",
+            .a,
+            .c,
+            .f,
+            .i,
+            .m,
+            .xesploop,
+            .xespv2p1,
+            .zcb,
+            .zcmt,
+            .zifencei,
+        }),
+    };
+    pub const esp32s31: CpuModel = .{
+        .name = "esp32s31",
+        .llvm_name = "esp32s31",
+        .features = featureSet(&[_]Feature{
+            .@"32bit",
+            .a,
+            .b,
+            .c,
+            .f,
+            .i,
+            .m,
+            .xesploop,
+            .xespv,
+            .zbc,
+            .zcb,
+            .zcmt,
+            .zifencei,
         }),
     };
     pub const generic: CpuModel = .{

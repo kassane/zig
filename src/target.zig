@@ -238,13 +238,13 @@ pub fn hasLlvmSupport(target: *const std.Target, ofmt: std.Target.ObjectFormat) 
         .x86,
         .x86_64,
         .xcore,
+        .xtensa,
         .nvptx,
         .nvptx64,
         .lanai,
         .wasm32,
         .wasm64,
         .ve,
-        .xtensa,
         => true,
 
         // LLVM backend exists but can produce neither assembly nor object files.

@@ -168,7 +168,6 @@ pub fn exeFromCompiledC(ctx: *Cases, name: []const u8, target_query: std.Target.
 pub fn addObjLlvm(ctx: *Cases, name: []const u8, target: std.Build.ResolvedTarget) *Case {
     const can_emit_asm = switch (target.result.cpu.arch) {
         .csky,
-        .xtensa,
         => false,
         else => true,
     };
@@ -178,7 +177,6 @@ pub fn addObjLlvm(ctx: *Cases, name: []const u8, target: std.Build.ResolvedTarge
         .nvptx,
         .nvptx64,
         .xcore,
-        .xtensa,
         => false,
         else => true,
     };

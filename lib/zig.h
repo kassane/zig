@@ -509,7 +509,7 @@
 #elif defined(zig_x86)
 #define zig_breakpoint() __asm__ volatile("int $0x3")
 #elif defined(zig_xtensa)
-#define zig_breakpoint() __asm__ volatile("break 1, 1")
+#define zig_breakpoint() __asm__ volatile("break 1, 15")
 #else
 #define zig_breakpoint() zig_breakpoint_unavailable
 #endif

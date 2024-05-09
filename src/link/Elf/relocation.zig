@@ -73,11 +73,38 @@ const riscv64_relocs = Table(11, elf.R_RISCV, .{
     .{ .tlsdesc, .TLSDESC },
 });
 
+const riscv32_relocs = Table(11, elf.R_RISCV, .{
+    .{ .none, .NONE },
+    .{ .abs, .@"32" },
+    .{ .copy, .COPY },
+    .{ .rel, .RELATIVE },
+    .{ .irel, .IRELATIVE },
+    .{ .glob_dat, .@"32" },
+    .{ .jump_slot, .JUMP_SLOT },
+    .{ .dtpmod, .TLS_DTPMOD32 },
+    .{ .dtpoff, .TLS_DTPREL32 },
+    .{ .tpoff, .TLS_TPREL32 },
+    .{ .tlsdesc, .TLSDESC },
+});
+
+// Xtensa has no COPY, IRELATIVE, DTPMOD, or TLSDESC relocations.
+const xtensa_relocs = Table(7, elf.R_XTENSA, .{
+    .{ .none, .NONE },
+    .{ .abs, .@"32" },
+    .{ .rel, .RELATIVE },
+    .{ .glob_dat, .GLOB_DAT },
+    .{ .jump_slot, .JMP_SLOT },
+    .{ .dtpoff, .TLS_DTPOFF },
+    .{ .tpoff, .TLS_TPOFF },
+});
+
 pub fn decode(r_type: u32, cpu_arch: std.Target.Cpu.Arch) ?Kind {
     return switch (cpu_arch) {
         .x86_64 => x86_64_relocs.decode(r_type),
         .aarch64, .aarch64_be => aarch64_relocs.decode(r_type),
         .riscv64, .riscv64be => riscv64_relocs.decode(r_type),
+        .riscv32, .riscv32be => riscv32_relocs.decode(r_type),
+        .xtensa, .xtensaeb => xtensa_relocs.decode(r_type),
         else => @panic("TODO unhandled cpu arch"),
     };
 }
@@ -87,6 +114,8 @@ pub fn encode(comptime kind: Kind, cpu_arch: std.Target.Cpu.Arch) u32 {
         .x86_64 => x86_64_relocs.encode(kind),
         .aarch64, .aarch64_be => aarch64_relocs.encode(kind),
         .riscv64, .riscv64be => riscv64_relocs.encode(kind),
+        .riscv32, .riscv32be => riscv32_relocs.encode(kind),
+        .xtensa, .xtensaeb => xtensa_relocs.encode(kind),
         else => @panic("TODO unhandled cpu arch"),
     };
 }
@@ -105,6 +134,12 @@ pub const dwarf = struct {
             .riscv64, .riscv64be => @backingInt(@as(elf.R_RISCV, switch (format) {
                 .@"32" => .@"32",
                 .@"64" => .@"64",
+            })),
+            .riscv32, .riscv32be => @intFromEnum(@as(elf.R_RISCV, switch (format) {
+                .@"32", .@"64" => .@"32",
+            })),
+            .xtensa, .xtensaeb => @intFromEnum(@as(elf.R_XTENSA, switch (format) {
+                .@"32", .@"64" => .@"32",
             })),
             else => @panic("TODO unhandled cpu arch"),
         };
@@ -141,6 +176,20 @@ pub const dwarf = struct {
                 },
                 .debug_frame => unreachable,
             })),
+            .riscv32, .riscv32be => @intFromEnum(@as(elf.R_RISCV, switch (source_section) {
+                else => switch (address_size) {
+                    .@"32", .@"64" => .@"32",
+                    else => unreachable,
+                },
+                .debug_frame => unreachable,
+            })),
+            .xtensa, .xtensaeb => @intFromEnum(@as(elf.R_XTENSA, switch (source_section) {
+                else => switch (address_size) {
+                    .@"32", .@"64" => if (target.flags.is_tls) .TLS_DTPOFF else .@"32",
+                    else => unreachable,
+                },
+                .debug_frame => .@"32_PCREL",
+            })),
             else => @panic("TODO unhandled cpu arch"),
         };
     }
@@ -165,7 +214,10 @@ fn formatRelocType(ctx: FormatRelocTypeCtx, writer: *std.Io.Writer) std.Io.Write
     switch (ctx.cpu_arch) {
         .x86_64 => try writer.print("R_X86_64_{s}", .{@tagName(@as(elf.R_X86_64, @fromBackingInt(@intCast(r_type))))}),
         .aarch64, .aarch64_be => try writer.print("R_AARCH64_{s}", .{@tagName(@as(elf.R_AARCH64, @fromBackingInt(@intCast(r_type))))}),
-        .riscv64, .riscv64be => try writer.print("R_RISCV_{s}", .{@tagName(@as(elf.R_RISCV, @fromBackingInt(@intCast(r_type))))}),
+        .riscv64, .riscv64be,
+        .riscv32, .riscv32be,
+        => try writer.print("R_RISCV_{s}", .{@tagName(@as(elf.R_RISCV, @fromBackingInt(@intCast(r_type))))}),
+        .xtensa, .xtensaeb => try writer.print("R_XTENSA_{s}", .{@tagName(@as(elf.R_XTENSA, @fromBackingInt(@intCast(r_type))))}),
         else => unreachable,
     }
 }

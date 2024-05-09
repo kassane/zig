@@ -820,6 +820,18 @@ fn generateSystemDefines(comp: *Compilation, w: *Io.Writer) !void {
         .arc => {
             try define(w, "__arc__");
         },
+        .xtensa, .xtensaeb => {
+            try define(w, "__xtensa__");
+            try define(w, "__XTENSA__");
+            if (target.cpu.arch == .xtensaeb) try define(w, "__XTENSAEB__");
+            switch (target.os.tag) {
+                .esp32 => try define(w, "__ESP32__"),
+                .esp32s2 => try define(w, "__ESP32_S2__"),
+                .esp32s3 => try define(w, "__ESP32_S3__"),
+                .esp8266 => try define(w, "__ESP8266__"),
+                else => {},
+            }
+        },
         .wasm32, .wasm64 => {
             try define(w, "__wasm");
             try define(w, "__wasm__");
@@ -851,6 +863,19 @@ fn generateSystemDefines(comp: *Compilation, w: *Io.Writer) !void {
         .riscv32, .riscv32be, .riscv64, .riscv64be => {
             try define(w, "__riscv");
             try w.print("#define __riscv_xlen {d}\n", .{ptr_width});
+            switch (target.os.tag) {
+                .esp32c2 => try define(w, "__ESP32_C2__"),
+                .esp32c3 => try define(w, "__ESP32_C3__"),
+                .esp32c5 => try define(w, "__ESP32_C5__"),
+                .esp32c6 => try define(w, "__ESP32_C6__"),
+                .esp32c61 => try define(w, "__ESP32_C61__"),
+                .esp32h2 => try define(w, "__ESP32_H2__"),
+                .esp32h21 => try define(w, "__ESP32_H21__"),
+                .esp32h4 => try define(w, "__ESP32_H4__"),
+                .esp32p4 => try define(w, "__ESP32_P4__"),
+                .esp32s31 => try define(w, "__ESP32_S31__"),
+                else => {},
+            }
         },
         else => {},
     }
