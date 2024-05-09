@@ -947,6 +947,11 @@ const llvm_targets = [_]LlvmTarget{
         .td_name = "Hexagon.td",
     },
     .{
+        .zig_name = "mos",
+        .llvm_name = "MOS",
+        .td_name = "MOS.td",
+    },
+    .{
         .zig_name = "lanai",
         .llvm_name = "Lanai",
         .td_name = "Lanai.td",

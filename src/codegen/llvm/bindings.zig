@@ -199,6 +199,7 @@ pub extern fn LLVMInitializeX86TargetInfo() void;
 pub extern fn LLVMInitializeXCoreTargetInfo() void;
 pub extern fn LLVMInitializeXtensaTargetInfo() void;
 pub extern fn LLVMInitializeM68kTargetInfo() void;
+pub extern fn LLVMInitializeMOSTargetInfo() void;
 pub extern fn LLVMInitializeCSKYTargetInfo() void;
 pub extern fn LLVMInitializeVETargetInfo() void;
 pub extern fn LLVMInitializeARCTargetInfo() void;
@@ -223,6 +224,7 @@ pub extern fn LLVMInitializeX86Target() void;
 pub extern fn LLVMInitializeXCoreTarget() void;
 pub extern fn LLVMInitializeXtensaTarget() void;
 pub extern fn LLVMInitializeM68kTarget() void;
+pub extern fn LLVMInitializeMOSTarget() void;
 pub extern fn LLVMInitializeVETarget() void;
 pub extern fn LLVMInitializeCSKYTarget() void;
 pub extern fn LLVMInitializeARCTarget() void;
@@ -247,6 +249,7 @@ pub extern fn LLVMInitializeX86TargetMC() void;
 pub extern fn LLVMInitializeXCoreTargetMC() void;
 pub extern fn LLVMInitializeXtensaTargetMC() void;
 pub extern fn LLVMInitializeM68kTargetMC() void;
+pub extern fn LLVMInitializeMOSTargetMC() void;
 pub extern fn LLVMInitializeCSKYTargetMC() void;
 pub extern fn LLVMInitializeVETargetMC() void;
 pub extern fn LLVMInitializeARCTargetMC() void;
@@ -270,6 +273,7 @@ pub extern fn LLVMInitializeWebAssemblyAsmPrinter() void;
 pub extern fn LLVMInitializeX86AsmPrinter() void;
 pub extern fn LLVMInitializeXCoreAsmPrinter() void;
 pub extern fn LLVMInitializeM68kAsmPrinter() void;
+pub extern fn LLVMInitializeMOSAsmPrinter() void;
 pub extern fn LLVMInitializeVEAsmPrinter() void;
 pub extern fn LLVMInitializeARCAsmPrinter() void;
 pub extern fn LLVMInitializeLoongArchAsmPrinter() void;
@@ -291,6 +295,7 @@ pub extern fn LLVMInitializeWebAssemblyAsmParser() void;
 pub extern fn LLVMInitializeX86AsmParser() void;
 pub extern fn LLVMInitializeXtensaAsmParser() void;
 pub extern fn LLVMInitializeM68kAsmParser() void;
+pub extern fn LLVMInitializeMOSAsmParser() void;
 pub extern fn LLVMInitializeCSKYAsmParser() void;
 pub extern fn LLVMInitializeVEAsmParser() void;
 pub extern fn LLVMInitializeLoongArchAsmParser() void;
@@ -388,6 +393,7 @@ pub const ArchType = enum(c_int) {
     mipsel,
     mips64,
     mips64el,
+    mos,
     msp430,
     ppc,
     ppcle,

@@ -1640,7 +1640,7 @@ pub fn intAbiAlignment(bits: u16, target: Target, use_llvm: bool) Alignment {
 pub fn maxIntAlignment(target: std.Target, use_llvm: bool) u16 {
     return switch (target.cpu.arch) {
         .avr => 1,
-        .msp430 => 2,
+        .mos, .msp430 => 2,
         .xcore => 4,
         .propeller1, .propeller2 => 4,
 

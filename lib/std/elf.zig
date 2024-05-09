@@ -1609,6 +1609,9 @@ pub const EM = enum(u16) {
     /// This value is an unofficial ELF value used in: https://github.com/ne75/llvm-project
     PROPELLER2 = 300,
 
+    /// MOS 6502
+    EM_MOS = 6502,
+
     _,
 };
 
