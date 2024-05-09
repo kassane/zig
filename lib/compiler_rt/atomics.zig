@@ -20,6 +20,7 @@ const supports_atomic_ops = switch (arch) {
     // perform CAS operations).
     // XXX: The Linux code path is not implemented yet.
     !builtin.cpu.has(.arm, .has_v6m),
+    .xtensa => builtin.cpu.has(.xtensa, .s32c1i),
     else => true,
 };
 
@@ -34,6 +35,7 @@ const largest_atomic_size = switch (arch) {
 
     // XXX: On x86/x86_64 we could check the presence of cmpxchg8b/cmpxchg16b
     // and set this parameter accordingly.
+    .xtensa => if (builtin.cpu.has(.xtensa, .s32c1i)) @sizeOf(u32) else 0,
     else => @sizeOf(usize),
 };
 

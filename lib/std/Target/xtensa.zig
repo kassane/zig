@@ -14,10 +14,13 @@ pub const Feature = enum {
     dfpaccel,
     div32,
     esp32s2ops,
+    esp32s3ops,
     exception,
+    expstate,
     extendedl32r,
     forced_atomics,
     fp,
+    hifi3,
     highpriinterrupts,
     highpriinterrupts_level3,
     highpriinterrupts_level4,
@@ -38,6 +41,7 @@ pub const Feature = enum {
     rvector,
     s32c1i,
     sext,
+    text_section_literals,
     threadptr,
     timers1,
     timers2,
@@ -99,9 +103,19 @@ pub const all_features = blk: {
         .description = "Support Xtensa esp32-s2 ISA extension",
         .dependencies = featureSet(&[_]Feature{}),
     };
+    result[@backingInt(Feature.esp32s3ops)] = .{
+        .llvm_name = "esp32s3ops",
+        .description = "Support Xtensa esp32-s3 ISA extension",
+        .dependencies = featureSet(&[_]Feature{}),
+    };
     result[@backingInt(Feature.exception)] = .{
         .llvm_name = "exception",
         .description = "Enable Xtensa Exception option",
+        .dependencies = featureSet(&[_]Feature{}),
+    };
+    result[@backingInt(Feature.expstate)] = .{
+        .llvm_name = "expstate",
+        .description = "Enable Xtensa EXPSTATE option",
         .dependencies = featureSet(&[_]Feature{}),
     };
     result[@backingInt(Feature.extendedl32r)] = .{
@@ -117,6 +131,11 @@ pub const all_features = blk: {
     result[@backingInt(Feature.fp)] = .{
         .llvm_name = "fp",
         .description = "Enable Xtensa Single FP instructions",
+        .dependencies = featureSet(&[_]Feature{}),
+    };
+    result[@backingInt(Feature.hifi3)] = .{
+        .llvm_name = "hifi3",
+        .description = "Enable Xtensa HIFI3 instructions",
         .dependencies = featureSet(&[_]Feature{}),
     };
     result[@backingInt(Feature.highpriinterrupts)] = .{
@@ -229,6 +248,11 @@ pub const all_features = blk: {
         .description = "Enable Xtensa Sign Extend option",
         .dependencies = featureSet(&[_]Feature{}),
     };
+    result[@backingInt(Feature.text_section_literals)] = .{
+        .llvm_name = "text-section-literals",
+        .description = "Enable Xtensa Text Section Literals option",
+        .dependencies = featureSet(&[_]Feature{}),
+    };
     result[@backingInt(Feature.threadptr)] = .{
         .llvm_name = "threadptr",
         .description = "Enable Xtensa THREADPTR option",
@@ -263,6 +287,36 @@ pub const all_features = blk: {
 };
 
 pub const cpu = struct {
+    pub const cnl: CpuModel = .{
+        .name = "cnl",
+        .llvm_name = "cnl",
+        .features = featureSet(&[_]Feature{
+            .bool,
+            .coprocessor,
+            .dcache,
+            .debug,
+            .density,
+            .div32,
+            .exception,
+            .fp,
+            .hifi3,
+            .highpriinterrupts,
+            .interrupt,
+            .loop,
+            .miscsr,
+            .mul32,
+            .mul32high,
+            .nsa,
+            .prid,
+            .regprotect,
+            .rvector,
+            .s32c1i,
+            .sext,
+            .threadptr,
+            .timers1,
+            .windowed,
+        }),
+    };
     pub const esp32: CpuModel = .{
         .name = "esp32",
         .llvm_name = "esp32",
@@ -276,6 +330,7 @@ pub const cpu = struct {
             .dfpaccel,
             .div32,
             .exception,
+            .expstate,
             .fp,
             .highpriinterrupts_level7,
             .interrupt,
@@ -320,6 +375,40 @@ pub const cpu = struct {
             .prid,
             .regprotect,
             .rvector,
+            .sext,
+            .threadptr,
+            .timers3,
+            .windowed,
+        }),
+    };
+    pub const esp32s3: CpuModel = .{
+        .name = "esp32s3",
+        .llvm_name = "esp32s3",
+        .features = featureSet(&[_]Feature{
+            .bool,
+            .clamps,
+            .coprocessor,
+            .dcache,
+            .debug,
+            .density,
+            .div32,
+            .esp32s3ops,
+            .exception,
+            .fp,
+            .highpriinterrupts_level7,
+            .interrupt,
+            .loop,
+            .mac16,
+            .minmax,
+            .miscsr,
+            .mul16,
+            .mul32,
+            .mul32high,
+            .nsa,
+            .prid,
+            .regprotect,
+            .rvector,
+            .s32c1i,
             .sext,
             .threadptr,
             .timers3,
