@@ -214,6 +214,8 @@ pub const CType = union(enum) {
 
                 .ez80_tiflags => .tiflags,
 
+                .xtensa_call0, .xtensa_windowed => .c,
+
                 else => unreachable, // `Zcu.callconvSupported`
             };
         }
