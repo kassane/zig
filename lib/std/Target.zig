@@ -608,6 +608,7 @@ pub const hexagon = @import("Target/hexagon.zig");
 pub const loongarch = @import("Target/loongarch.zig");
 pub const m68k = @import("Target/m68k.zig");
 pub const mips = @import("Target/mips.zig");
+pub const mos = @import("Target/mos.zig");
 pub const msp430 = @import("Target/msp430.zig");
 pub const nvptx = @import("Target/nvptx.zig");
 pub const powerpc = @import("Target/powerpc.zig");
@@ -1001,6 +1002,7 @@ pub const Cpu = struct {
         mipsel,
         mips64,
         mips64el,
+        mos,
         msp430,
         powerpc,
         powerpcle,
@@ -1098,6 +1100,10 @@ pub const Cpu = struct {
             };
         }
 
+        pub inline fn isMOS6502(arch: Arch) bool {
+            return arch == .mos;
+        }
+
         pub inline fn isPPC(arch: Arch) bool {
             return switch (arch) {
                 .powerpc, .powerpcle => true,
@@ -1188,6 +1194,7 @@ pub const Cpu = struct {
                 .aarch64_be => .AARCH64,
                 .mips64 => .MIPS,
                 .mips64el => .MIPS_RS3_LE,
+                .mos => .EM_MOS,
                 .powerpc64 => .PPC64,
                 .powerpc64le => .PPC64,
                 .riscv64 => .RISCV,
@@ -1272,6 +1279,7 @@ pub const Cpu = struct {
                 .sparc64 => .Unknown,
                 .s390x => .Unknown,
                 .ve => .Unknown,
+                .mos => .Unknown,
                 .spu_2 => .Unknown,
                 .spirv => .Unknown,
                 .spirv32 => .Unknown,
@@ -1332,6 +1340,7 @@ pub const Cpu = struct {
                 .loongarch32,
                 .loongarch64,
                 .arc,
+                .mos,
                 => .little,
 
                 .armeb,
@@ -1376,6 +1385,7 @@ pub const Cpu = struct {
                 .bpfel, .bpfeb => "bpf",
                 .loongarch32, .loongarch64 => "loongarch",
                 .mips, .mipsel, .mips64, .mips64el => "mips",
+                .mos => "mos",
                 .powerpc, .powerpcle, .powerpc64, .powerpc64le => "powerpc",
                 .amdgcn => "amdgpu",
                 .riscv32, .riscv64 => "riscv",
@@ -1413,6 +1423,7 @@ pub const Cpu = struct {
                 .xtensa => &xtensa.all_features,
                 .nvptx, .nvptx64 => &nvptx.all_features,
                 .ve => &ve.all_features,
+                .mos => &mos.all_features,
                 .wasm32, .wasm64 => &wasm.all_features,
 
                 else => &[0]Cpu.Feature{},
@@ -1443,6 +1454,7 @@ pub const Cpu = struct {
                 .xtensa => comptime allCpusFromDecls(xtensa.cpu),
                 .nvptx, .nvptx64 => comptime allCpusFromDecls(nvptx.cpu),
                 .ve => comptime allCpusFromDecls(ve.cpu),
+                .mos => comptime allCpusFromDecls(mos.cpu),
                 .wasm32, .wasm64 => comptime allCpusFromDecls(wasm.cpu),
 
                 else => &[0]*const Model{},
@@ -1535,6 +1547,7 @@ pub const Cpu = struct {
                 .x86_64 => &x86.cpu.x86_64,
                 .nvptx, .nvptx64 => &nvptx.cpu.sm_20,
                 .ve => &ve.cpu.generic,
+                .mos => &mos.cpu.mos6502,
                 .wasm32, .wasm64 => &wasm.cpu.generic,
 
                 else => &S.generic_model,
@@ -1790,6 +1803,7 @@ pub const DynamicLinker = struct {
                 .spirv,
                 .spirv32,
                 .spirv64,
+                .mos,
                 => none,
 
                 // TODO go over each item in this list and either move it to the above list, or
@@ -1895,6 +1909,7 @@ pub fn ptrBitWidth_cpu_abi(cpu: Cpu, abi: Abi) u16 {
         .avr,
         .msp430,
         .spu_2,
+        .mos,
         => 16,
 
         .arc,
@@ -2436,6 +2451,7 @@ pub fn c_type_alignment(target: Target, c_type: CType) u16 {
 
             .msp430,
             .avr,
+            .mos,
             => 2,
 
             .arc,
@@ -2559,7 +2575,7 @@ pub fn c_type_preferred_alignment(target: Target, c_type: CType) u16 {
     return @min(
         std.math.ceilPowerOfTwoAssert(u16, (c_type_bit_size(target, c_type) + 7) / 8),
         @as(u16, switch (target.cpu.arch) {
-            .msp430 => 2,
+            .mos, .msp430 => 2,
 
             .csky,
             .xcore,

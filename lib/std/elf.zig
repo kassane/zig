@@ -1633,6 +1633,9 @@ pub const EM = enum(u16) {
     /// Fujitsu FR-V
     FRV = 0x5441,
 
+    /// MOS 6502
+    EM_MOS = 6502,
+
     _,
 
     pub fn toTargetCpuArch(em: EM) ?std.Target.Cpu.Arch {
@@ -1645,6 +1648,7 @@ pub const EM = enum(u16) {
             .@"68K" => .m68k,
             .MIPS => .mips,
             .MIPS_RS3_LE => .mipsel,
+            .EM_MOS => .mos,
             .PPC => .powerpc,
             .SPARC => .sparc,
             .@"386" => .x86,

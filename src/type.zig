@@ -1570,7 +1570,7 @@ pub const Type = struct {
     pub fn maxIntAlignment(target: std.Target, use_llvm: bool) u16 {
         return switch (target.cpu.arch) {
             .avr => 1,
-            .msp430 => 2,
+            .mos, .msp430 => 2,
             .xcore => 4,
 
             .arm,
