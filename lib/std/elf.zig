@@ -1552,6 +1552,9 @@ pub const EM = enum(u16) {
     /// Adapteva's Epiphany architecture
     ADAPTEVA_EPIPHANY = 0x1223,
 
+    /// MOS 6502
+    EM_MOS = 6502,
+
     _,
 };
 

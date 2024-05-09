@@ -60,6 +60,7 @@ pub fn targetTriple(allocator: Allocator, target: std.Target) ![]const u8 {
         .mipsel => "mipsel",
         .mips64 => "mips64",
         .mips64el => "mips64el",
+        .mos => "mos",
         .msp430 => "msp430",
         .powerpc => "powerpc",
         .powerpcle => "powerpcle",
@@ -272,6 +273,7 @@ pub fn targetArch(arch_tag: std.Target.Cpu.Arch) llvm.ArchType {
         .mipsel => .mipsel,
         .mips64 => .mips64,
         .mips64el => .mips64el,
+        .mos => .mos,
         .msp430 => .msp430,
         .powerpc => .ppc,
         .powerpcle => .ppcle,
@@ -322,6 +324,8 @@ const DataLayoutBuilder = struct {
         _: std.fmt.FormatOptions,
         writer: anytype,
     ) @TypeOf(writer).Error!void {
+        if (self.target.cpu.arch == .mos)
+            return try writer.writeAll("e-m:e-p:16:8-p1:8:8-i16:8-i32:8-i64:8-f32:8-f64:8-a:8-Fi8-n8");
         try writer.writeByte(switch (self.target.cpu.arch.endian()) {
             .little => 'e',
             .big => 'E',
@@ -12607,6 +12611,15 @@ pub fn initializeLLVMTarget(arch: std.Target.Cpu.Arch) void {
             llvm.LLVMInitializeMipsTargetMC();
             llvm.LLVMInitializeMipsAsmPrinter();
             llvm.LLVMInitializeMipsAsmParser();
+        },
+        .mos => {
+            if (build_options.llvm_has_mos) {
+                llvm.LLVMInitializeMOSTarget();
+                llvm.LLVMInitializeMOSTargetInfo();
+                llvm.LLVMInitializeMOSTargetMC();
+                llvm.LLVMInitializeMOSAsmPrinter();
+                llvm.LLVMInitializeMOSAsmParser();
+            }
         },
         .msp430 => {
             llvm.LLVMInitializeMSP430Target();

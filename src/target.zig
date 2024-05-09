@@ -135,6 +135,7 @@ pub fn hasLlvmSupport(target: std.Target, ofmt: std.Target.ObjectFormat) bool {
         .mipsel,
         .mips64,
         .mips64el,
+        .mos,
         .msp430,
         .powerpc,
         .powerpcle,

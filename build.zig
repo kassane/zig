@@ -103,6 +103,11 @@ pub fn build(b: *std.Build) !void {
         "llvm-has-m68k",
         "Whether LLVM has the experimental target m68k enabled",
     ) orelse false;
+    const llvm_has_mos = b.option(
+        bool,
+        "llvm-has-mos",
+        "Whether LLVM has the experimental target mos enabled",
+    ) orelse false;
     const llvm_has_csky = b.option(
         bool,
         "llvm-has-csky",
@@ -229,6 +234,7 @@ pub fn build(b: *std.Build) !void {
     exe_options.addOption(bool, "skip_non_native", skip_non_native);
     exe_options.addOption(bool, "have_llvm", enable_llvm);
     exe_options.addOption(bool, "llvm_has_m68k", llvm_has_m68k);
+    exe_options.addOption(bool, "llvm_has_mos", llvm_has_mos);
     exe_options.addOption(bool, "llvm_has_csky", llvm_has_csky);
     exe_options.addOption(bool, "llvm_has_arc", llvm_has_arc);
     exe_options.addOption(bool, "llvm_has_xtensa", llvm_has_xtensa);
@@ -391,6 +397,7 @@ pub fn build(b: *std.Build) !void {
     test_cases_options.addOption(bool, "skip_non_native", skip_non_native);
     test_cases_options.addOption(bool, "have_llvm", enable_llvm);
     test_cases_options.addOption(bool, "llvm_has_m68k", llvm_has_m68k);
+    test_cases_options.addOption(bool, "llvm_has_mos", llvm_has_mos);
     test_cases_options.addOption(bool, "llvm_has_csky", llvm_has_csky);
     test_cases_options.addOption(bool, "llvm_has_arc", llvm_has_arc);
     test_cases_options.addOption(bool, "llvm_has_xtensa", llvm_has_xtensa);
@@ -451,6 +458,7 @@ pub fn build(b: *std.Build) !void {
     }, .{
         .enable_llvm = enable_llvm,
         .llvm_has_m68k = llvm_has_m68k,
+        .llvm_has_mos = llvm_has_mos,
         .llvm_has_csky = llvm_has_csky,
         .llvm_has_arc = llvm_has_arc,
         .llvm_has_xtensa = llvm_has_xtensa,
@@ -1299,6 +1307,16 @@ const llvm_libs = [_][]const u8{
     "LLVMTargetParser",
     "LLVMSupport",
     "LLVMDemangle",
+    "LLVMMOSCodeGen",
+    "LLVMMOSDesc",
+    "LLVMMOSDisassembler",
+    "LLVMMOSAsmParser",
+    "LLVMMOSInfo",
+    "LLVMM68kCodeGen",
+    "LLVMM68kDesc",
+    "LLVMM68kDisassembler",
+    "LLVMM68kAsmParser",
+    "LLVMM68kInfo",
 };
 
 fn generateLangRef(b: *std.Build) std.Build.LazyPath {

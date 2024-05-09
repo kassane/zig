@@ -131,6 +131,7 @@ const targets = [_]std.Target.Query{
     .{ .cpu_arch = .x86_64, .os_tag = .windows, .abi = .msvc },
     .{ .cpu_arch = .xtensa, .os_tag = .freestanding, .abi = .none },
     .{ .cpu_arch = .xtensa, .os_tag = .linux, .abi = .none },
+    .{ .cpu_arch = .mos, .os_tag = .freestanding, .abi = .none },
 };
 
 pub fn addCases(
@@ -142,6 +143,7 @@ pub fn addCases(
     for (targets) |target_query| {
         if (target_query.cpu_arch) |arch| switch (arch) {
             .m68k => if (!build_options.llvm_has_m68k) continue,
+            .mos => if (!build_options.llvm_has_mos) continue,
             .csky => if (!build_options.llvm_has_csky) continue,
             .arc => if (!build_options.llvm_has_arc) continue,
             .xtensa => if (!build_options.llvm_has_xtensa) continue,
