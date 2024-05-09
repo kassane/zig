@@ -322,6 +322,8 @@ const DataLayoutBuilder = struct {
         _: std.fmt.FormatOptions,
         writer: anytype,
     ) @TypeOf(writer).Error!void {
+        if (self.target.cpu.arch == .xtensa)
+            return try writer.writeAll("e-m:e-p:32:32-v1:8:8-i64:64-i128:128-n32");
         try writer.writeByte(switch (self.target.cpu.arch.endian()) {
             .little => 'e',
             .big => 'E',
@@ -12669,7 +12671,7 @@ pub fn initializeLLVMTarget(arch: std.Target.Cpu.Arch) void {
                 llvm.LLVMInitializeXtensaTarget();
                 llvm.LLVMInitializeXtensaTargetInfo();
                 llvm.LLVMInitializeXtensaTargetMC();
-                // There is no LLVMInitializeXtensaAsmPrinter function.
+                llvm.LLVMInitializeXtensaAsmPrinter();
                 llvm.LLVMInitializeXtensaAsmParser();
             }
         },
