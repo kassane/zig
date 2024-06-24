@@ -8,7 +8,7 @@ allocator: Allocator,
 mir: Mir,
 cc: std.builtin.CallingConvention,
 err_msg: ?*ErrorMsg = null,
-src_loc: Module.SrcLoc,
+src_loc: Zcu.SrcLoc,
 result_insts_len: u8 = undefined,
 result_relocs_len: u8 = undefined,
 result_insts: [
@@ -520,8 +520,8 @@ const log = std.log.scoped(.lower);
 
 const Air = @import("../../Air.zig");
 const Allocator = std.mem.Allocator;
-const ErrorMsg = Module.ErrorMsg;
+const ErrorMsg = Zcu.ErrorMsg;
 const Mir = @import("Mir.zig");
-const Module = @import("../../Module.zig");
+const Zcu = @import("../../Zcu.zig");
 const Instruction = encoder.Instruction;
 const Immediate = bits.Immediate;
