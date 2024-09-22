@@ -16,7 +16,6 @@ pub const Feature = enum {
     arith_bcc_fusion,
     arith_cbz_fusion,
     ascend_store_address,
-    b16b16,
     balance_fp_ops,
     bf16,
     brbe,
@@ -297,13 +296,6 @@ pub const all_features = blk: {
         .llvm_name = "ascend-store-address",
         .description = "Schedule vector stores by ascending address",
         .dependencies = featureSet(&[_]Feature{}),
-    };
-    result[@intFromEnum(Feature.b16b16)] = .{
-        .llvm_name = "b16b16",
-        .description = "Enable SVE2.1 or SME2.1 non-widening BFloat16 to BFloat16 instructions",
-        .dependencies = featureSet(&[_]Feature{
-            .bf16,
-        }),
     };
     result[@intFromEnum(Feature.balance_fp_ops)] = .{
         .llvm_name = "balance-fp-ops",
@@ -589,7 +581,7 @@ pub const all_features = blk: {
     };
     result[@intFromEnum(Feature.fpac)] = .{
         .llvm_name = "fpac",
-        .description = "Enable v8.3-A Pointer Authentication Faulting enhancement",
+        .description = "Enable Armv8.3-A Pointer Authentication Faulting enhancement",
         .dependencies = featureSet(&[_]Feature{}),
     };
     result[@intFromEnum(Feature.fptoint)] = .{
@@ -1083,8 +1075,8 @@ pub const all_features = blk: {
         .llvm_name = "sme-b16b16",
         .description = "Enable SME2.1 ZA-targeting non-widening BFloat16 instructions",
         .dependencies = featureSet(&[_]Feature{
-            .b16b16,
             .sme2,
+            .sve_b16b16,
         }),
     };
     result[@intFromEnum(Feature.sme_f16f16)] = .{
@@ -1256,9 +1248,7 @@ pub const all_features = blk: {
     result[@intFromEnum(Feature.sve_b16b16)] = .{
         .llvm_name = "sve-b16b16",
         .description = "Enable SVE2 non-widening and SME2 Z-targeting non-widening BFloat16 instructions",
-        .dependencies = featureSet(&[_]Feature{
-            .b16b16,
-        }),
+        .dependencies = featureSet(&[_]Feature{}),
     };
     result[@intFromEnum(Feature.tagged_globals)] = .{
         .llvm_name = "tagged-globals",
@@ -1820,6 +1810,7 @@ pub const cpu = struct {
             .arith_cbz_fusion,
             .disable_latency_sched_heuristic,
             .fp16fml,
+            .fpac,
             .fuse_address,
             .fuse_aes,
             .fuse_arith_logic,
@@ -1844,6 +1835,7 @@ pub const cpu = struct {
             .arith_cbz_fusion,
             .disable_latency_sched_heuristic,
             .fp16fml,
+            .fpac,
             .fuse_address,
             .fuse_adrp_add,
             .fuse_aes,
@@ -1870,6 +1862,7 @@ pub const cpu = struct {
             .arith_cbz_fusion,
             .disable_latency_sched_heuristic,
             .fp16fml,
+            .fpac,
             .fuse_address,
             .fuse_adrp_add,
             .fuse_aes,
@@ -1988,6 +1981,7 @@ pub const cpu = struct {
             .arith_cbz_fusion,
             .disable_latency_sched_heuristic,
             .fp16fml,
+            .fpac,
             .fuse_address,
             .fuse_aes,
             .fuse_arith_logic,
@@ -2012,6 +2006,7 @@ pub const cpu = struct {
             .arith_cbz_fusion,
             .disable_latency_sched_heuristic,
             .fp16fml,
+            .fpac,
             .fuse_address,
             .fuse_adrp_add,
             .fuse_aes,
@@ -2038,6 +2033,7 @@ pub const cpu = struct {
             .arith_cbz_fusion,
             .disable_latency_sched_heuristic,
             .fp16fml,
+            .fpac,
             .fuse_address,
             .fuse_aes,
             .fuse_arith_logic,
