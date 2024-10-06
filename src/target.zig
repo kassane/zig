@@ -31,7 +31,7 @@ pub fn libcNeedsLibUnwind(target: std.Target) bool {
         .wasi, // Wasm/WASI currently doesn't offer support for libunwind, so don't link it.
         => false,
 
-        .windows => target.abi != .msvc,
+        .windows => target.abi.isGnu(),
         else => true,
     };
 }
@@ -45,8 +45,7 @@ pub fn requiresPIC(target: std.Target, linking_libc: bool) bool {
     return target.isAndroid() or
         target.os.tag == .windows or target.os.tag == .uefi or
         osRequiresLibC(target) or
-        (linking_libc and target.isGnuLibC()) or
-        (target.abi == .ohos and target.cpu.arch == .aarch64);
+        (linking_libc and target.isGnuLibC());
 }
 
 pub fn picLevel(target: std.Target) u32 {
@@ -87,7 +86,7 @@ pub fn hasValgrindSupport(target: std.Target) bool {
         .aarch64_be,
         => {
             return target.os.tag == .linux or target.os.tag == .solaris or target.os.tag == .illumos or
-                (target.os.tag == .windows and target.abi != .msvc);
+                (target.os.tag == .windows and target.abi.isGnu());
         },
         else => return false,
     }
@@ -168,6 +167,8 @@ pub fn hasLlvmSupport(target: std.Target, ofmt: std.Target.ObjectFormat) bool {
         // No LLVM backend exists.
         .kalimba,
         .spu_2,
+        .propeller1,
+        .propeller2,
         => false,
     };
 }
@@ -304,20 +305,17 @@ pub fn libcFullLinkFlags(target: std.Target) []const []const u8 {
             "-lc",
             "-lnetwork",
         },
-        else => switch (target.abi) {
-            .android => &[_][]const u8{
-                "-lm",
-                "-lc",
-                "-ldl",
-            },
-            else => &[_][]const u8{
-                "-lm",
-                "-lpthread",
-                "-lc",
-                "-ldl",
-                "-lrt",
-                "-lutil",
-            },
+        else => if (target.isAndroid() or target.abi.isOpenHarmony()) &[_][]const u8{
+            "-lm",
+            "-lc",
+            "-ldl",
+        } else &[_][]const u8{
+            "-lm",
+            "-lpthread",
+            "-lc",
+            "-ldl",
+            "-lrt",
+            "-lutil",
         },
     };
 }

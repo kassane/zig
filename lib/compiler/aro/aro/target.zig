@@ -652,7 +652,6 @@ pub fn toLLVMTriple(target: std.Target, buf: []u8) []const u8 {
         .tvos => "tvos",
         .watchos => "watchos",
         .driverkit => "driverkit",
-        .shadermodel => "shadermodel",
         .visionos => "xros",
         .serenity => "serenity",
         .bridgeos => "bridgeos",
@@ -690,6 +689,7 @@ pub fn toLLVMTriple(target: std.Target, buf: []u8) []const u8 {
         .eabi => "eabi",
         .eabihf => "eabihf",
         .android => "android",
+        .androideabi => "androideabi",
         .musl => "musl",
         .musleabi => "musleabi",
         .musleabihf => "musleabihf",
@@ -699,7 +699,8 @@ pub fn toLLVMTriple(target: std.Target, buf: []u8) []const u8 {
         .cygnus => "cygnus",
         .simulator => "simulator",
         .macabi => "macabi",
-        .ohos => "openhos",
+        .ohos => "ohos",
+        .ohoseabi => "ohoseabi",
     };
     writer.writeAll(llvm_abi) catch unreachable;
     return stream.getWritten();
