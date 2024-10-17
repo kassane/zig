@@ -3765,11 +3765,11 @@ fn createModule(
             info: SystemLib,
         }) = .{};
         for (create_module.system_libs.keys(), create_module.system_libs.values()) |lib_name, info| {
-            if (target.is_libc_lib_name(lib_name)) {
+            if (std.zig.target.isLibCLibName(target, lib_name)) {
                 create_module.opts.link_libc = true;
                 continue;
             }
-            if (target.is_libcpp_lib_name(lib_name)) {
+            if (std.zig.target.isLibCxxLibName(target, lib_name)) {
                 create_module.opts.link_libcpp = true;
                 continue;
             }
@@ -6118,6 +6118,7 @@ fn cmdAstCheck(
 
     var file: Zcu.File = .{
         .status = .never_loaded,
+        .prev_status = .never_loaded,
         .source_loaded = false,
         .tree_loaded = false,
         .zir_loaded = false,
@@ -6299,7 +6300,7 @@ fn detectNativeCpuWithLLVM(
     llvm_cpu_name_z: ?[*:0]const u8,
     llvm_cpu_features_opt: ?[*:0]const u8,
 ) !std.Target.Cpu {
-    var result = std.Target.Cpu.baseline(arch);
+    var result = std.Target.Cpu.baseline(arch, builtin.os);
 
     if (llvm_cpu_name_z) |cpu_name_z| {
         const llvm_cpu_name = mem.span(cpu_name_z);
@@ -6441,6 +6442,7 @@ fn cmdDumpZir(
 
     var file: Zcu.File = .{
         .status = .never_loaded,
+        .prev_status = .never_loaded,
         .source_loaded = false,
         .tree_loaded = false,
         .zir_loaded = true,
@@ -6508,6 +6510,7 @@ fn cmdChangelist(
 
     var file: Zcu.File = .{
         .status = .never_loaded,
+        .prev_status = .never_loaded,
         .source_loaded = false,
         .tree_loaded = false,
         .zir_loaded = false,
