@@ -395,7 +395,11 @@ bool AssemblerInvocation::CreateFromArgs(AssemblerInvocation &Opts,
 
   Opts.EmitCompactUnwindNonCanonical =
       Args.hasArg(OPT_femit_compact_unwind_non_canonical);
+#if LLVM_VERSION_MAJOR >= 23
   Opts.EmitSFrameUnwind = Args.hasArg(OPT_gsframe);
+#else
+  Opts.EmitSFrameUnwind = false;
+#endif
   Opts.Crel = Args.hasArg(OPT_crel);
   Opts.RelocSectionSym = RelocSectionSymType::All;
   if (auto *A = Args.getLastArg(OPT_reloc_section_sym))

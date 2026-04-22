@@ -845,6 +845,7 @@ pub fn storageClass(cg: *const CodeGen, as: std.lang.AddressSpace) spec.StorageC
         .cog,
         .lut,
         .hub,
+        .zp,
         => unreachable,
     };
 }
