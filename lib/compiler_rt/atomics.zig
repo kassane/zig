@@ -13,7 +13,7 @@ const symbol = compiler_rt.symbol;
 // detail to keep the export logic clean and because we need some kind of CAS to
 // implement the spinlocks.
 const supports_atomic_ops = switch (arch) {
-    .msp430, .avr, .bpfel, .bpfeb => false,
+    .mos, .msp430, .avr, .bpfel, .bpfeb => false,
     .arm, .armeb, .thumb, .thumbeb =>
     // The ARM v6m ISA has no ldrex/strex and so it's impossible to do CAS
     // operations (unless we're targeting Linux, the kernel provides a way to
@@ -31,6 +31,10 @@ const largest_atomic_size = switch (arch) {
     // available atomic operation is a test-and-set (`ldstub`), so we force
     // every atomic memory access to go through the lock.
     .sparc => if (builtin.cpu.has(.sparc, .hasleoncasa)) @sizeOf(usize) else 0,
+
+    // MOS (6502/65816) has no atomic instructions at all; force everything
+    // through spinlocks regardless of size.
+    .mos => 0,
 
     // XXX: On x86/x86_64 we could check the presence of cmpxchg8b/cmpxchg16b
     // and set this parameter accordingly.

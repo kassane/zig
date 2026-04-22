@@ -4201,6 +4201,8 @@ fn updateConstInner(dwarf: *Dwarf, pt: Zcu.PerThread, debug_const_index: link.Co
 
                     .m68k_rtd => .LLVM_M68kRTD,
 
+                    .mos_sysv => .normal,
+
                     .sh_renesas => .GNU_renesas_sh,
 
                     .amdgcn_kernel => .LLVM_OpenCLKernel,
@@ -4224,6 +4226,7 @@ fn updateConstInner(dwarf: *Dwarf, pt: Zcu.PerThread, debug_const_index: link.Co
                     .m68k_interrupt,
                     .microblaze_interrupt,
                     .msp430_interrupt,
+                    .mos_interrupt,
                     => .normal,
 
                     else => .nocall,
