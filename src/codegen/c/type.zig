@@ -206,6 +206,7 @@ pub const CType = union(enum) {
                 .avr_interrupt,
                 .csky_interrupt,
                 .m68k_interrupt,
+                .mos_interrupt,
                 .msp430_interrupt,
                 .x86_16_interrupt,
                 .x86_interrupt,

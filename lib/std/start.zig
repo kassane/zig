@@ -85,6 +85,17 @@ comptime {
             .psp,
             .vita,
             => {},
+            // MOS platforms: the llvm-mos linker script places .call_main after crt0 init.
+            // Emit a naked trampoline in that section so the user's main() is invoked
+            // without a hand-written call_main.s in each example.
+            .appleii, .atari2600, .atari5200, .nes, .c64, .c128, .cpm65, .cx16, .dodo, .eater, .fds, .geos_cbm, .atari8, .lynx, .mega65, .osi_c1p, .pce, .pce_cd, .pet, .rp6502, .rpc8e, .sim, .snes, .supervision, .vic20 => {
+                if (native_arch == .mos and @hasDecl(root, "main")) {
+                    if (!@typeInfo(@TypeOf(root.main)).@"fn".attrs.@"callconv".eql(.c)) {
+                        @export(&mosMain, .{ .name = "main" });
+                    }
+                    @export(&mosCallMainSection, .{ .name = "__zig_call_main_section" });
+                }
+            },
             else => if (!@hasDecl(root, start_sym_name)) @export(&_start, .{ .name = start_sym_name }),
         }
     }
@@ -162,6 +173,19 @@ fn EfiMain(handle: uefi.Handle, system_table: *uefi.tables.SystemTable) callconv
     }
 }
 
+fn mosMain() callconv(.c) void {
+    root.main();
+}
+
+// Placed in .call_main section so the llvm-mos linker script invokes main()
+// after crt0 initialisation. Naked: no prologue/epilogue, no implicit RTS.
+fn mosCallMainSection() linksection(".call_main") callconv(.naked) void {
+    asm volatile (
+        \\ jsr main
+        ::: .{ .memory = true }
+    );
+}
+
 fn _start() callconv(.naked) noreturn {
     // TODO set Top of Stack on non x86_64-plan9
     if (native_os == .plan9 and native_arch == .x86_64) {
@@ -201,6 +225,8 @@ fn _start() callconv(.naked) noreturn {
             .x86 => ".cfi_undefined %%eip",
             .x86_64 => ".cfi_undefined %%rip",
             .xtensa, .xtensaeb => "", // No CFI support.
+            // MOS 6502 has no link register; the PC is saved on the hardware stack by JSR.
+            .mos => "",
             else => @compileError("unsupported arch"),
         });
 
@@ -850,7 +876,8 @@ inline fn wrapMain(result: anytype) u8 {
     const unwrapped_result = result catch |err| {
         std.log.err("{t}", .{err});
         switch (native_os) {
-            .freestanding, .other => {},
+            .freestanding, .other,
+            .appleii, .atari2600, .atari5200, .nes, .c64, .c128, .cpm65, .cx16, .dodo, .eater, .fds, .geos_cbm, .atari8, .lynx, .mega65, .osi_c1p, .pce, .pce_cd, .pet, .rp6502, .rpc8e, .sim, .snes, .supervision, .vic20 => {},
             else => if (@errorReturnTrace()) |trace| std.debug.dumpErrorReturnTrace(trace),
         }
         return 1;

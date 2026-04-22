@@ -1402,6 +1402,13 @@ const targets = [_]ArchTarget{
             "loongarch64",
         },
     },
+     .{
+        .zig_name = "mos",
+        .llvm = .{
+            .name = "MOS",
+            .td_name = "MOS",
+        },
+    },
     .{
         .zig_name = "m68k",
         .llvm = .{
