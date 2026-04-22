@@ -133,6 +133,14 @@ const targets = [_]std.Target.Query{
     .{ .cpu_arch = .m68k, .os_tag = .netbsd, .abi = .none },
     .{ .cpu_arch = .m68k, .os_tag = .rtems, .abi = .none },
 
+    .{ .cpu_arch = .mos, .os_tag = .freestanding, .abi = .none },
+    .{ .cpu_arch = .mos, .os_tag = .nes, .abi = .none },
+    .{ .cpu_arch = .mos, .os_tag = .c64, .abi = .none },
+    .{ .cpu_arch = .mos, .os_tag = .cx16, .abi = .none },
+    .{ .cpu_arch = .mos, .os_tag = .snes, .abi = .none },
+    .{ .cpu_arch = .mos, .os_tag = .mega65, .abi = .none },
+    .{ .cpu_arch = .mos, .os_tag = .atari8, .abi = .none },
+
     .{ .cpu_arch = .mips, .os_tag = .freestanding, .abi = .eabi },
     .{ .cpu_arch = .mips, .os_tag = .freestanding, .abi = .eabihf },
     .{ .cpu_arch = .mips, .os_tag = .linux, .abi = .eabi },
@@ -368,6 +376,7 @@ pub fn addCases(
     for (targets) |target_query| {
         if (target_query.cpu_arch) |arch| switch (arch) {
             .m68k => if (!build_options.llvm_has_m68k) continue,
+            .mos => if (!build_options.llvm_has_mos6502) continue,
             .csky => if (!build_options.llvm_has_csky) continue,
             .arc => if (!build_options.llvm_has_arc) continue,
             .xtensa => if (!build_options.llvm_has_xtensa) continue,

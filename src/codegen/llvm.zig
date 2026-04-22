@@ -2304,11 +2304,12 @@ pub const Object = struct {
             // clang sets both the function's calling convention and the function attributes
             // in its backend, so future patches to the AVR backend could end up checking only one,
             // possibly breaking our support. it's safer to just emit both.
-            .avr_interrupt, .avr_signal, .csky_interrupt => {
+            .avr_interrupt, .avr_signal, .csky_interrupt, .mos_interrupt => {
                 try attributes.addFnAttr(.{ .string = .{
                     .kind = try o.builder.string(switch (fn_info.cc) {
                         .avr_interrupt,
                         .csky_interrupt,
+                        .mos_interrupt,
                         => "interrupt",
                         .avr_signal => "signal",
                         else => unreachable,
@@ -4320,6 +4321,7 @@ pub fn toLlvmCallConvTag(cc_tag: std.lang.CallingConvention.Tag, target: *const 
         .mips64_interrupt,
         .mips_interrupt,
         .csky_interrupt,
+        .mos_interrupt,
         => .ccc,
 
         // All the calling conventions which LLVM does not have a general representation for.
@@ -4373,6 +4375,7 @@ pub fn toLlvmCallConvTag(cc_tag: std.lang.CallingConvention.Tag, target: *const 
         .m68k_sysv,
         .m68k_gnu,
         .m88k_sysv,
+        .mos_sysv,
         .msp430_eabi,
         .or1k_sysv,
         .propeller_sysv,
@@ -4479,6 +4482,10 @@ fn llvmAddrSpaceInfo(target: *const std.Target) []const AddrSpaceInfo {
         },
         .m68k => &.{
             .{ .zig = .generic, .llvm = .default, .abi = 16, .pref = 32 },
+        },
+        .mos => &.{
+            .{ .zig = .generic, .llvm = .default, .abi = 8 },
+            .{ .zig = .zp, .llvm = Builder.AddrSpace.mos.zeropage, .size = 8, .abi = 8 },
         },
         else => &.{
             .{ .zig = .generic, .llvm = .default },
@@ -4655,6 +4662,15 @@ pub fn initializeLLVMTarget(io: Io, arch: std.Target.Cpu.Arch) void {
             bindings.LLVMInitializeXCoreTargetMC();
             bindings.LLVMInitializeXCoreAsmPrinter();
             // There is no LLVMInitializeXCoreAsmParser function.
+        },
+        .mos => {
+            if (build_options.llvm_has_mos6502) {
+                bindings.LLVMInitializeMOSTarget();
+                bindings.LLVMInitializeMOSTargetInfo();
+                bindings.LLVMInitializeMOSTargetMC();
+                bindings.LLVMInitializeMOSAsmPrinter();
+                bindings.LLVMInitializeMOSAsmParser();
+            }
         },
         .m68k => {
             if (build_options.llvm_has_m68k) {

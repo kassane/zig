@@ -117,6 +117,7 @@ pub fn tripleForTarget(allocator: Allocator, target: *const std.Target) ![]const
         .mipsel => if (target.cpu.has(.mips, .mips32r6)) "mipsisa32r6el" else "mipsel",
         .mips64 => if (target.cpu.has(.mips, .mips64r6)) "mipsisa64r6" else "mips64",
         .mips64el => if (target.cpu.has(.mips, .mips64r6)) "mipsisa64r6el" else "mips64el",
+        .mos => "mos",
         .msp430 => "msp430",
         .powerpc => "powerpc",
         .powerpcle => "powerpcle",
@@ -283,20 +284,46 @@ pub fn tripleForTarget(allocator: Allocator, target: *const std.Target) ![]const
         .vulkan => "vulkan",
         .managarm => "managarm",
 
+        .appleii,
+        .atari2600,
+        .atari5200,
+        .atari8,
+        .c64,
+        .c128,
         .contiki,
+        .cpm65,
+        .cx16,
+        .dodo,
+        .eater,
+        .fds,
         .freestanding,
+        .gba,
+        .geos_cbm,
+        .lynx,
+        .mega65,
+        .nes,
         .opencl, // https://llvm.org/docs/SPIRVUsage.html#target-triples
         .opengl,
+        .osi_c1p,
         .other,
+        .pce,
+        .pce_cd,
+        .pet,
         .plan9,
         .psx,
         .psp,
+        .rp6502,
+        .rpc8e,
+        .sim,
+        .snes,
+        .supervision,
+        .tios,
+        .vic20,
         .vita,
         .tios,
         .@"3ds",
         .wiiu,
         .@"switch",
-        .gba,
         .ashetos,
         => "unknown",
     };
@@ -561,6 +588,7 @@ pub const DataLayout = struct {
             .loongarch32 => "e-m:e-p:32:32-i64:64-n32-S128",
             .loongarch64 => "e-m:e-p:64:64-i64:64-i128:128-n32:64-S128",
             .xtensa => "e-m:e-p:32:32-i8:8:32-i16:16:32-i64:64-n32",
+            .mos => "e-m:e-p:16:8-p1:8:8-i16:8-i32:8-i64:8-f32:8-f64:8-a:8-Fi8-n8",
 
             .alpha,
             .arceb,
@@ -2846,6 +2874,12 @@ pub const AddrSpace = enum(u24) {
         pub const ptr64: AddrSpace = @fromBackingInt(272);
     };
     pub const x86_64 = x86;
+
+    // See llvm/lib/Target/MOS/MOS.h
+    pub const mos = struct {
+        pub const data: AddrSpace = @fromBackingInt(0);
+        pub const zeropage: AddrSpace = @fromBackingInt(1);
+    };
 
     // See llvm/lib/Target/AVR/AVR.h
     pub const avr = struct {

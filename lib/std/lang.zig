@@ -340,6 +340,10 @@ pub const CallingConvention = union(enum(u8)) {
     microblaze_std: CommonOptions,
     microblaze_interrupt: MicroblazeInterruptOptions,
 
+    // Calling conventions for the `mos6502` architecture.
+    mos_sysv: CommonOptions,
+    mos_interrupt: CommonOptions,
+
     /// The standard `msp430` calling convention.
     msp430_eabi: CommonOptions,
     msp430_interrupt: CommonOptions,
@@ -617,6 +621,9 @@ pub const AddressSpace = enum(u5) {
     // Web Assembly
     externref,
     funcref,
+    
+    /// This address space only addresses the zero page (first 256 bytes; 8-bit pointer).
+    zp,
 };
 
 /// This data structure is used by the Zig language code generation and

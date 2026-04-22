@@ -4630,6 +4630,10 @@ pub fn callconvSupported(zcu: *Zcu, cc: std.lang.CallingConvention) union(enum) 
                 .x86_stdcall,
                 => |opts| opts.register_params == 0, // incoming stack alignment supported
 
+                .mos_interrupt,
+                .mos_sysv,
+                => |opts| opts.incoming_stack_alignment == null,
+
                 else => false,
             };
         },

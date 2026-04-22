@@ -7202,6 +7202,17 @@ const ParamTypeIterator = struct {
                     .i32_array => |size| return .{ .i32_array = size },
                 }
             },
+            .mos_sysv => {
+                it.zig_index += 1;
+                it.llvm_index += 1;
+                switch (mos_c_abi.classifyType(ty, zcu)) {
+                    .byval => return .byval,
+                    .indirect => {
+                        it.byval_attr = true;
+                        return .byref;
+                    },
+                }
+            },
             .powerpc64_elf_v2 => {
                 it.zig_index += 1;
                 it.llvm_index += 1;
@@ -7573,6 +7584,10 @@ pub fn fnReturnStrat(o: *Object, cc: std.lang.CallingConvention, ret_ty: Type) A
         .mips_o32 => switch (mips_c_abi.classifyType(ret_ty, zcu, .ret)) {
             .memory, .i32_array => .sret,
             .byval => .forceByVal(o, ret_ty),
+        },
+        .mos_sysv => switch (mos_c_abi.classifyType(ret_ty, zcu)) {
+            .byval => return o.lowerType(ret_ty),
+            .indirect => return .void,
         },
         .powerpc64_elf_v2 => if (isByRef(ret_ty, zcu)) switch (ret_ty.abiSize(zcu)) {
             1...8 => .{ .mem_cast = try o.builder.intType(@intCast(ret_ty.abiSize(zcu) * 8)) },
@@ -8404,6 +8419,7 @@ const assert = std.debug.assert;
 const math = std.math;
 
 const aarch64_c_abi = @import("../aarch64/abi.zig");
+const mos_c_abi = @import("../mos/abi.zig");
 const arm_c_abi = @import("../arm/abi.zig");
 const loongarch_c_abi = @import("../loongarch/abi.zig");
 const mips_c_abi = @import("../mips/abi.zig");

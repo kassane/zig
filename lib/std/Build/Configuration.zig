@@ -2323,6 +2323,7 @@ pub const TargetQuery = struct {
         mipsel,
         mips64,
         mips64el,
+        mos,
         msp430,
         nvptx,
         nvptx64,
@@ -2372,7 +2373,7 @@ pub const TargetQuery = struct {
         }
     };
 
-    pub const OsTag = enum(u6) {
+    pub const OsTag = enum(u7) {
         freestanding,
         other,
         contiki,
@@ -2421,6 +2422,31 @@ pub const TargetQuery = struct {
         vulkan,
         tios,
         ashetos,
+        appleii,
+        atari2600,
+        atari5200,
+        atari8,
+        c64,
+        c128,
+        cpm65,
+        cx16,
+        dodo,
+        eater,
+        fds,
+        geos_cbm,
+        lynx,
+        mega65,
+        nes,
+        osi_c1p,
+        pce,
+        pce_cd,
+        pet,
+        rp6502,
+        rpc8e,
+        sim,
+        snes,
+        supervision,
+        vic20,
 
         default,
 
@@ -2465,7 +2491,7 @@ pub const TargetQuery = struct {
         }
     };
 
-    pub const Flags = packed struct(u32) {
+    pub const Flags = packed struct(u64) {
         cpu_arch: CpuArch,
         cpu_model: CpuModel,
         cpu_features_add: bool,
@@ -2478,6 +2504,7 @@ pub const TargetQuery = struct {
         glibc_version: bool,
         android_api_level: bool,
         dynamic_linker: bool,
+        _padding: u31 = 0,
     };
 
     pub fn unwrapTarget(tq: *const TargetQuery, c: *const Configuration) std.Target {

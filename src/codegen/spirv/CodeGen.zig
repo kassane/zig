@@ -850,6 +850,7 @@ pub fn storageClass(cg: *const CodeGen, as: std.lang.AddressSpace) spec.StorageC
         .hub,
         .externref,
         .funcref,
+        .zp,
         => unreachable,
     };
 }
