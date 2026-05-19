@@ -7735,10 +7735,6 @@ fn switchExpr(
         };
 
         if (capture != .none) assert(any_has_payload_capture);
-        if (is_err_switch) {
-            assert(!any_payload_is_ref); // should have failed by now
-            assert(!any_has_tag_capture); // should have failed by now
-        }
 
         prong_body: {
             scratch_scope.instructions_top = parent_gz.instructions.items.len;
@@ -7844,6 +7840,10 @@ fn switchExpr(
                 scalar_case_index += 1;
             }
         }
+    }
+    if (is_err_switch) {
+        assert(!any_payload_is_ref); // should have failed by now
+        assert(!any_has_tag_capture); // should have failed by now
     }
     assert(scalar_case_index + multi_case_index + @intFromBool(has_else) == case_nodes.len);
     assert(multi_items_infos_start + multi_item_offset == bodies_start);
