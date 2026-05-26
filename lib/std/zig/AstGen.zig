@@ -1460,6 +1460,7 @@ fn arrayInitExpr(
                 mem.eql(u8, tree.tokenSlice(tree.nodeMainToken(array_type.ast.elem_count)), "_"))
             {
                 const len_inst = try gz.addInt(array_init.ast.elements.len);
+                const saved_cursor = astgen.saveSourceCursor();
                 const elem_type = try typeExpr(gz, scope, array_type.ast.elem_type);
                 if (array_type.ast.sentinel == .none) {
                     const array_type_inst = try gz.addPlNode(.array_type, type_expr, Zir.Inst.Bin{
@@ -1468,6 +1469,7 @@ fn arrayInitExpr(
                     });
                     break :inst .{ array_type_inst, elem_type };
                 } else {
+                    astgen.restoreSourceCursor(saved_cursor);
                     const sentinel_node = array_type.ast.sentinel.unwrap().?;
                     const sentinel = try comptimeExpr(gz, scope, .{ .rl = .{ .ty = elem_type } }, sentinel_node, .array_sentinel);
                     const array_type_inst = try gz.addPlNode(
@@ -1729,6 +1731,7 @@ fn structInitExpr(
             mem.eql(u8, tree.tokenSlice(tree.nodeMainToken(array_type.ast.elem_count)), "_");
         if (struct_init.ast.fields.len == 0) {
             if (is_inferred_array_len) {
+                const saved_cursor = astgen.saveSourceCursor();
                 const elem_type = try typeExpr(gz, scope, array_type.ast.elem_type);
                 const array_type_inst = if (array_type.ast.sentinel == .none) blk: {
                     break :blk try gz.addPlNode(.array_type, type_expr, Zir.Inst.Bin{
@@ -1736,6 +1739,7 @@ fn structInitExpr(
                         .rhs = elem_type,
                     });
                 } else blk: {
+                    astgen.restoreSourceCursor(saved_cursor);
                     const sentinel_node = array_type.ast.sentinel.unwrap().?;
                     const sentinel = try comptimeExpr(gz, scope, .{ .rl = .{ .ty = elem_type } }, sentinel_node, .array_sentinel);
                     break :blk try gz.addPlNode(
@@ -3436,6 +3440,7 @@ fn assignDestructureMaybeDecls(
     const is_comptime = full.comptime_token != null or gz.is_comptime;
     const value_is_comptime = tree.nodeTag(full.ast.value_expr) == .@"comptime";
 
+    const saved_cursor = astgen.saveSourceCursor();
     // When declaring consts via a destructure, we always use a result pointer.
     // This avoids the need to create tuple types, and is also likely easier to
     // optimize, since it's a bit tricky for the optimizer to "split up" the
@@ -3563,6 +3568,7 @@ fn assignDestructureMaybeDecls(
     if (any_lvalue_expr) {
         // At least one variable was an lvalue expr. Iterate again in order to
         // evaluate the lvalues from within the possible block_comptime.
+        astgen.restoreSourceCursor(saved_cursor);
         for (rl_components, full.ast.variables) |*variable_rl, variable_node| {
             if (variable_rl.* != .typed_ptr) continue;
             switch (tree.nodeTag(variable_node)) {
@@ -3896,7 +3902,9 @@ fn arrayTypeSentinel(gz: *GenZir, scope: *Scope, ri: ResultInfo, node: Ast.Node.
         return astgen.failNode(len_node, "unable to infer array size", .{});
     }
     const len = try reachableExprComptime(gz, scope, .{ .rl = .{ .coerced_ty = .usize_type } }, len_node, node, .array_length);
+    const saved_cursor = astgen.saveSourceCursor();
     const elem_type = try typeExpr(gz, scope, extra.elem_type);
+    astgen.restoreSourceCursor(saved_cursor);
     const sentinel = try reachableExprComptime(gz, scope, .{ .rl = .{ .coerced_ty = elem_type } }, extra.sentinel, node, .array_sentinel);
 
     const result = try gz.addPlNode(.array_type_sentinel, node, Zir.Inst.ArrayTypeSentinel{
