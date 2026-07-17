@@ -398,7 +398,9 @@ pub fn fromZoirNodeAlloc(
         .diag = diag,
     };
 
-    return parser.parseExpr(T, node);
+    var out: T = undefined;
+    try parser.parseExprInto(node, &out);
+    return out;
 }
 
 /// Frees ZON values.
@@ -488,34 +490,36 @@ const Parser = struct {
 
     const ParseExprError = error{ ParseZon, OutOfMemory };
 
-    fn parseExpr(self: *@This(), T: type, node: Zoir.Node.Index) ParseExprError!T {
-        return self.parseExprInner(T, node) catch |err| switch (err) {
-            error.WrongType => return self.failExpectedType(T, node),
+    fn parseExprInto(self: *@This(), node: Zoir.Node.Index, out: anytype) ParseExprError!void {
+        return self.parseExprInnerInto(node, out) catch |err| switch (err) {
+            error.WrongType => return self.failExpectedType(@TypeOf(out.*), node),
             else => |e| return e,
         };
     }
 
     const ParseExprInnerError = error{ ParseZon, OutOfMemory, WrongType };
 
-    fn parseExprInner(
+    fn parseExprInnerInto(
         self: *@This(),
-        T: type,
         node: Zoir.Node.Index,
-    ) ParseExprInnerError!T {
-        if (T == Zoir.Node.Index) {
-            return node;
+        out: anytype,
+    ) ParseExprInnerError!void {
+        if (@TypeOf(out.*) == Zoir.Node.Index) {
+            out.* = node;
+            return;
         }
 
-        switch (@typeInfo(T)) {
+        switch (@typeInfo(@TypeOf(out.*))) {
             .optional => |optional| if (node.get(self.zoir) == .null) {
-                return null;
+                out.* = null;
             } else {
-                return try self.parseExprInner(optional.child, node);
+                out.* = @as(optional.child, undefined); // Make non-null
+                try self.parseExprInnerInto(node, &out.*.?); // Parse value into non-null pointer
             },
-            .bool => return self.parseBool(node),
-            .int => return self.parseInt(T, node),
-            .float => return self.parseFloat(T, node),
-            .@"enum" => return self.parseEnumLiteral(T, node),
+            .bool => out.* = try self.parseBool(node),
+            .int => out.* = try self.parseInt(@TypeOf(out.*), node),
+            .float => out.* = try self.parseFloat(@TypeOf(out.*), node),
+            .@"enum" => out.* = try self.parseEnumLiteral(@TypeOf(out.*), node),
             .pointer => |pointer| switch (pointer.size) {
                 .one => {
                     const slice = try self.gpa.alignedAlloc(
@@ -524,23 +528,20 @@ const Parser = struct {
                         1,
                     );
                     errdefer self.gpa.free(slice);
-                    const result = &slice[0];
-                    result.* = try self.parseExprInner(pointer.child, node);
-                    return result;
+                    const ptr = &slice[0];
+                    try self.parseExprInnerInto(node, ptr);
+                    out.* = ptr;
                 },
-                .slice => return self.parseSlicePointer(T, node),
+                .slice => out.* = try self.parseSlicePointer(@TypeOf(out.*), node),
                 else => comptime unreachable,
             },
-            .array => return self.parseArray(T, node),
-            .vector => |vector| {
-                const A = [vector.len]vector.child;
-                return try self.parseArray(A, node);
-            },
+            .array => try self.parseArrayInto(node, out),
+            .vector => try self.parseVectorInto(node, out),
             .@"struct" => |@"struct"| if (@"struct".is_tuple)
-                return self.parseTuple(T, node)
+                try self.parseTupleInto(node, out)
             else
-                return self.parseStruct(T, node),
-            .@"union" => return self.parseUnion(T, node),
+                try self.parseStructInto(node, out),
+            .@"union" => try self.parseUnionInto(node, out),
 
             else => comptime unreachable,
         }
@@ -758,53 +759,61 @@ const Parser = struct {
                     free(self.gpa, item);
                 }
             };
-            elem.* = try self.parseExpr(pointer.child, nodes.at(@intCast(i)));
+            try self.parseExprInto(nodes.at(@intCast(i)), elem);
         }
 
         return slice;
     }
 
-    fn parseArray(self: *@This(), T: type, node: Zoir.Node.Index) !T {
+    fn parseArrayInto(self: *@This(), node: Zoir.Node.Index, out: anytype) !void {
         const nodes: Zoir.Node.Index.Range = switch (node.get(self.zoir)) {
             .array_literal => |nodes| nodes,
             .empty_literal => .{ .start = node, .len = 0 },
             else => return error.WrongType,
         };
 
-        const array_info = @typeInfo(T).array;
+        const array = @typeInfo(@TypeOf(out.*)).array;
 
         // Check if the size matches
-        if (nodes.len < array_info.len) {
+        if (nodes.len < array.len) {
             return self.failNodeFmt(
                 node,
                 "expected {} array elements; found {}",
-                .{ array_info.len, nodes.len },
+                .{ array.len, nodes.len },
             );
-        } else if (nodes.len > array_info.len) {
+        } else if (nodes.len > array.len) {
             return self.failNodeFmt(
-                nodes.at(array_info.len),
+                nodes.at(array.len),
                 "index {} outside of array of length {}",
-                .{ array_info.len, array_info.len },
+                .{ array.len, array.len },
             );
         }
 
         // Parse the elements and return the array
-        var result: T = undefined;
-        for (&result, 0..) |*elem, i| {
+        inline for (out, 0..) |*elem, i| {
             // If we fail to parse this field, free all fields before it
             errdefer if (self.options.free_on_error) {
-                for (result[0..i]) |item| {
+                for (out[0..i]) |item| {
                     free(self.gpa, item);
                 }
             };
 
-            elem.* = try self.parseExpr(array_info.child, nodes.at(@intCast(i)));
+            try self.parseExprInto(nodes.at(@intCast(i)), elem);
         }
-        if (array_info.sentinel()) |s| result[result.len] = s;
-        return result;
+
+        if (array.sentinel()) |s| {
+            out[array.len] = s;
+        }
     }
 
-    fn parseStruct(self: *@This(), T: type, node: Zoir.Node.Index) !T {
+    fn parseVectorInto(self: *@This(), node: Zoir.Node.Index, out: anytype) !void {
+        const vector = @typeInfo(@TypeOf(out.*)).vector;
+        var array: [vector.len]vector.child = undefined;
+        try self.parseArrayInto(node, &array);
+        out.* = array;
+    }
+
+    fn parseStructInto(self: *@This(), node: Zoir.Node.Index, out: anytype) !void {
         const repr = node.get(self.zoir);
         const fields: @FieldType(Zoir.Node, "struct_literal") = switch (repr) {
             .struct_literal => |nodes| nodes,
@@ -812,7 +821,7 @@ const Parser = struct {
             else => return error.WrongType,
         };
 
-        const info = @typeInfo(T).@"struct";
+        const info = @typeInfo(@TypeOf(out.*)).@"struct";
 
         // Build a map from field name to index.
         // The special value `comptime_field` indicates that this is actually a comptime field.
@@ -826,7 +835,6 @@ const Parser = struct {
         };
 
         // Parse the struct
-        var result: T = undefined;
         var field_found: [info.field_names.len]bool = @splat(false);
 
         // If we fail partway through, free all already initialized fields
@@ -836,7 +844,7 @@ const Parser = struct {
                 switch (field_indices.get(name_runtime.get(self.zoir)) orelse continue) {
                     inline 0...(info.field_names.len - 1) => |name_index| {
                         const name = info.field_names[name_index];
-                        free(self.gpa, @field(result, name));
+                        free(self.gpa, @field(out, name));
                     },
                     else => unreachable, // Can't be out of bounds
                 }
@@ -848,7 +856,7 @@ const Parser = struct {
             const name = fields.names[i].get(self.zoir);
             const field_index = field_indices.get(name) orelse {
                 if (self.options.ignore_unknown_fields) continue;
-                return self.failUnexpected(T, "field", node, i, name);
+                return self.failUnexpected(@TypeOf(out.*), "field", node, i, name);
             };
             if (field_index == comptime_field) {
                 return self.failComptimeField(node, i);
@@ -863,9 +871,9 @@ const Parser = struct {
                 inline 0...(info.field_names.len - 1) => |j| {
                     if (info.field_attrs[j].@"comptime") unreachable;
 
-                    @field(result, info.field_names[j]) = try self.parseExpr(
-                        info.field_types[j],
+                    try self.parseExprInto(
                         fields.vals.at(@intCast(i)),
+                        &@field(out, info.field_names[j]),
                     );
                 },
                 else => unreachable, // Can't be out of bounds
@@ -879,7 +887,7 @@ const Parser = struct {
             if (!found) {
                 const field_attrs = info.field_attrs[i];
                 if (field_attrs.defaultValue(info.field_types[i])) |default| {
-                    @field(result, info.field_names[i]) = default;
+                    @field(out, info.field_names[i]) = default;
                 } else {
                     return self.failNodeFmt(
                         node,
@@ -889,19 +897,16 @@ const Parser = struct {
                 }
             }
         }
-
-        return result;
     }
 
-    fn parseTuple(self: *@This(), T: type, node: Zoir.Node.Index) !T {
+    fn parseTupleInto(self: *@This(), node: Zoir.Node.Index, out: anytype) !void {
         const nodes: Zoir.Node.Index.Range = switch (node.get(self.zoir)) {
             .array_literal => |nodes| nodes,
             .empty_literal => .{ .start = node, .len = 0 },
             else => return error.WrongType,
         };
 
-        var result: T = undefined;
-        const info = @typeInfo(T).@"struct";
+        const info = @typeInfo(@TypeOf(out.*)).@"struct";
 
         if (nodes.len > info.field_names.len) {
             return self.failNodeFmt(
@@ -915,7 +920,7 @@ const Parser = struct {
             // Check if we're out of bounds
             if (i >= nodes.len) {
                 if (info.field_attrs[i].defaultValue(info.field_types[i])) |default| {
-                    @field(result, info.field_names[i]) = default;
+                    @field(out.*, info.field_names[i]) = default;
                 } else {
                     return self.failNodeFmt(node, "missing tuple field with index {}", .{i});
                 }
@@ -924,23 +929,21 @@ const Parser = struct {
                 errdefer if (self.options.free_on_error) {
                     inline for (0..i) |j| {
                         if (j >= i) break;
-                        free(self.gpa, result[j]);
+                        free(self.gpa, out[j]);
                     }
                 };
 
                 if (info.field_attrs[i].@"comptime") {
                     return self.failComptimeField(node, i);
                 } else {
-                    result[i] = try self.parseExpr(info.field_types[i], nodes.at(i));
+                    try self.parseExprInto(nodes.at(i), &out[i]);
                 }
             }
         }
-
-        return result;
     }
 
-    fn parseUnion(self: *@This(), T: type, node: Zoir.Node.Index) !T {
-        const @"union" = @typeInfo(T).@"union";
+    fn parseUnionInto(self: *@This(), node: Zoir.Node.Index, out: anytype) !void {
+        const @"union" = @typeInfo(@TypeOf(out.*)).@"union";
 
         if (@"union".field_names.len == 0) comptime unreachable;
 
@@ -966,7 +969,7 @@ const Parser = struct {
                 const field_index = b: {
                     const field_name_str = field_name.get(self.zoir);
                     break :b field_indices.get(field_name_str) orelse
-                        return self.failUnexpected(T, "field", node, null, field_name_str);
+                        return self.failUnexpected(@TypeOf(out.*), "field", node, null, field_name_str);
                 };
 
                 // Initialize the union from the given field.
@@ -977,7 +980,7 @@ const Parser = struct {
                             return self.failNode(node, "expected union");
 
                         // Instantiate the union
-                        return @unionInit(T, @"union".field_names[i], {});
+                        out.* = @unionInit(@TypeOf(out.*), @"union".field_names[i], {});
                     },
                     else => unreachable, // Can't be out of bounds
                 }
@@ -992,15 +995,15 @@ const Parser = struct {
                 const field_name_str = field_name.get(self.zoir);
                 const field_val = struct_fields.vals.at(0);
                 const field_index = field_indices.get(field_name_str) orelse
-                    return self.failUnexpected(T, "field", node, 0, field_name_str);
+                    return self.failUnexpected(@TypeOf(out.*), "field", node, 0, field_name_str);
 
                 switch (field_index) {
                     inline 0...@"union".field_names.len - 1 => |i| {
                         if (@"union".field_types[i] == void) {
                             return self.failNode(field_val, "expected type 'void'");
                         } else {
-                            const value = try self.parseExpr(@"union".field_types[i], field_val);
-                            return @unionInit(T, @"union".field_names[i], value);
+                            out.* = @unionInit(@TypeOf(out.*), @"union".field_names[i], undefined);
+                            try self.parseExprInto(field_val, &@field(out.*, @"union".field_names[i]));
                         }
                     },
                     else => unreachable, // Can't be out of bounds
