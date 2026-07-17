@@ -518,8 +518,13 @@ const Parser = struct {
             .@"enum" => return self.parseEnumLiteral(T, node),
             .pointer => |pointer| switch (pointer.size) {
                 .one => {
-                    const result = try self.gpa.create(pointer.child);
-                    errdefer self.gpa.destroy(result);
+                    const slice = try self.gpa.alignedAlloc(
+                        pointer.child,
+                        if (pointer.attrs.@"align") |a| .fromByteUnits(a) else null,
+                        1,
+                    );
+                    errdefer self.gpa.free(slice);
+                    const result = &slice[0];
                     result.* = try self.parseExprInner(pointer.child, node);
                     return result;
                 },
@@ -3567,4 +3572,26 @@ test "std.zon errors without diagnostics" {
     };
     try std.testing.expectError(error.ParseZon, fromSliceAlloc(Union, gpa, ".a", null, .{}));
     try std.testing.expectError(error.ParseZon, fromSliceAlloc(Union, gpa, ".{ .b = 8 }", null, .{}));
+}
+
+test "std.zon aligned pointers" {
+    const gpa = std.testing.allocator;
+
+    const n: u8 align(8) = 10;
+    const Foo = struct {
+        inner: *align(8) const u8,
+    };
+
+    const expected: Foo = .{
+        .inner = &n,
+    };
+    const found = try fromSliceAlloc(
+        Foo,
+        gpa,
+        ".{ .inner = 10 }",
+        null,
+        .{},
+    );
+    defer free(gpa, found);
+    try std.testing.expectEqualDeep(expected.inner, found.inner);
 }
