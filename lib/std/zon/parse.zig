@@ -6,6 +6,8 @@
 //! * `fromZoir`/`fromZoirAlloc`
 //! * `fromZoirNode`/`fromZoirNodeAlloc`
 //!
+//! To update an existing values, see the `updateFrom*` variants.
+//!
 //! For lower level control over parsing, see `std.zig.Zoir`.
 
 const std = @import("std");
@@ -23,14 +25,39 @@ const ArrayList = std.ArrayList;
 /// Rename when adding or removing support for a type.
 const valid_types = {};
 
-/// Configuration for the runtime parser.
-pub const Options = struct {
+/// Deprecated.
+pub const Options = FromOptions;
+
+/// Configuration for the `from*` functions.
+pub const FromOptions = struct {
     /// If true, unknown fields do not error.
     ignore_unknown_fields: bool = false,
     /// If true, the parser cleans up partially parsed values on error. This requires some extra
     /// bookkeeping, so you may want to turn it off if you don't need this feature (e.g. because
     /// you're using arena allocation.)
     free_on_error: bool = true,
+
+    fn toParserOptions(self: FromOptions) Parser.Options {
+        return .{
+            .ignore_unknown_fields = self.ignore_unknown_fields,
+            .ignore_missing_fields = false,
+            .free_on_error = self.free_on_error,
+        };
+    }
+};
+
+/// Configuration for the `updateFrom*` variants.
+pub const UpdateFromOptions = struct {
+    /// If true, unknown fields do not error.
+    ignore_unknown_fields: bool = false,
+
+    fn toParserOptions(self: UpdateFromOptions) Parser.Options {
+        return .{
+            .ignore_unknown_fields = self.ignore_unknown_fields,
+            .ignore_missing_fields = true,
+            .free_on_error = false,
+        };
+    }
 };
 
 pub const Error = union(enum) {
@@ -260,50 +287,92 @@ pub const Diagnostics = struct {
 ///
 /// An allocator is still required for temporary allocations made during parsing.
 pub fn fromSlice(
+    /// The type to deserialize into. Only the following types are supported, unsupported types will
+    /// result in a compiler error:
+    ///
+    /// * Optionals of supported types
+    /// * Booleans
+    /// * Integers except for `comptime_int`
+    /// * Floats except for `comptime_float`
+    /// * Enums
+    /// * Single item pointers to supported types
+    /// * Slices of supported types
+    /// * Arrays of supported types
+    /// * Vectors of supported types
+    /// * Structures of supported types
+    /// * Tuples of supported types
+    /// * Unions
     T: type,
     gpa: Allocator,
     source: [:0]const u8,
     diag: ?*Diagnostics,
-    options: Options,
+    options: FromOptions,
 ) error{ OutOfMemory, ParseZon }!T {
     comptime assert(!requiresAllocator(T));
     return fromSliceAlloc(T, gpa, source, diag, options);
 }
 
+/// Similar to `fromSlice`, but updates an existing value `current`. Fields not specified by ZON are
+/// left at their current values. Pointers are replaced with new values not mutated in place.
+pub fn updateFromSlice(
+    T: type,
+    gpa: Allocator,
+    current: *T,
+    source: [:0]const u8,
+    diag: ?*Diagnostics,
+    options: UpdateFromOptions,
+) error{ OutOfMemory, ParseZon }!void {
+    comptime assert(!requiresAllocator(T));
+    try updateFromSliceAlloc(T, gpa, current, source, diag, options);
+}
+
 /// Like `fromSlice`, but the result may contain pointers. To automatically free the result, see
 /// `free`.
 pub fn fromSliceAlloc(
-    /// The type to deserialize into. May not be or contain any of the following types:
-    /// * Any comptime-only type, except in a comptime field
-    /// * `type`
-    /// * `void`, except as a union payload
-    /// * `noreturn`
-    /// * An error set/error union
-    /// * A many-pointer or C-pointer
-    /// * An opaque type, including `anyopaque`
-    /// * An async frame type, including `anyframe` and `anyframe->T`
-    /// * A function
-    ///
-    /// All other types are valid. Unsupported types will fail at compile time.
     T: type,
     gpa: Allocator,
     source: [:0]const u8,
     diag: ?*Diagnostics,
-    options: Options,
+    options: FromOptions,
 ) error{ OutOfMemory, ParseZon }!T {
+    var result: T = undefined;
+    try parseSliceAlloc(T, &result, gpa, source, diag, options.toParserOptions());
+    return result;
+}
+
+/// Like updateFromSlice`, but the result may contain pointers. Requires an arena for cleanup.
+pub fn updateFromSliceAlloc(
+    T: type,
+    arena: Allocator,
+    current: *T,
+    source: [:0]const u8,
+    diag: ?*Diagnostics,
+    options: UpdateFromOptions,
+) error{ OutOfMemory, ParseZon }!void {
+    try parseSliceAlloc(T, current, arena, source, diag, options.toParserOptions());
+}
+
+fn parseSliceAlloc(
+    T: type,
+    current: *T,
+    arena: Allocator,
+    source: [:0]const u8,
+    diag: ?*Diagnostics,
+    options: Parser.Options,
+) error{ OutOfMemory, ParseZon }!void {
     if (diag) |s| s.assertEmpty();
 
-    var ast = try std.zig.Ast.parse(gpa, source, .{ .mode = .zon });
-    defer if (diag == null) ast.deinit(gpa);
+    var ast = try std.zig.Ast.parse(arena, source, .{ .mode = .zon });
+    defer if (diag == null) ast.deinit(arena);
     if (diag) |s| s.ast = ast;
 
     // If there's no diagnostics, Zoir exists for the lifetime of this function. If there is a
     // diagnostics, ownership is transferred to diagnostics.
-    var zoir = try ZonGen.generate(gpa, ast, .{ .parse_str_lits = false });
-    defer if (diag == null) zoir.deinit(gpa);
+    var zoir = try ZonGen.generate(arena, ast, .{ .parse_str_lits = false });
+    defer if (diag == null) zoir.deinit(arena);
 
     if (diag) |s| s.* = .{};
-    return fromZoirAlloc(T, gpa, ast, zoir, diag, options);
+    try parseZoirAlloc(T, arena, current, ast, zoir, diag, options);
 }
 
 /// Like `fromSlice`, but operates on `Zoir` instead of ZON source.
@@ -312,7 +381,7 @@ pub fn fromZoir(
     ast: Ast,
     zoir: Zoir,
     diag: ?*Diagnostics,
-    options: Options,
+    options: FromOptions,
 ) error{ParseZon}!T {
     comptime assert(!requiresAllocator(T));
     var buf: [0]u8 = .{};
@@ -330,6 +399,32 @@ pub fn fromZoir(
     };
 }
 
+/// Like `updateSlice`, but operates on `Zoir` instead of ZON source.
+pub fn updateFromZoir(
+    T: type,
+    current: *T,
+    ast: Ast,
+    zoir: Zoir,
+    diag: ?*Diagnostics,
+    options: UpdateFromOptions,
+) error{ParseZon}!void {
+    comptime assert(!requiresAllocator(T));
+    var buf: [0]u8 = .{};
+    var failing_allocator = std.heap.FixedBufferAllocator.init(&buf);
+    updateFromZoirAlloc(
+        T,
+        failing_allocator.allocator(),
+        current,
+        ast,
+        zoir,
+        diag,
+        options,
+    ) catch |err| switch (err) {
+        error.OutOfMemory => unreachable, // Checked by comptime assertion above
+        else => |e| return e,
+    };
+}
+
 /// Like `fromSliceAlloc`, but operates on `Zoir` instead of ZON source.
 pub fn fromZoirAlloc(
     T: type,
@@ -337,9 +432,34 @@ pub fn fromZoirAlloc(
     ast: Ast,
     zoir: Zoir,
     diag: ?*Diagnostics,
-    options: Options,
+    options: FromOptions,
 ) error{ OutOfMemory, ParseZon }!T {
     return fromZoirNodeAlloc(T, gpa, ast, zoir, .root, diag, options);
+}
+
+/// Like updateSliceAlloc`, but operates on `Zoir` instead of ZON source.
+pub fn updateFromZoirAlloc(
+    T: type,
+    arena: Allocator,
+    current: *T,
+    ast: Ast,
+    zoir: Zoir,
+    diag: ?*Diagnostics,
+    options: UpdateFromOptions,
+) error{ OutOfMemory, ParseZon }!void {
+    try parseZoirAlloc(T, arena, current, ast, zoir, diag, options.toParserOptions());
+}
+
+fn parseZoirAlloc(
+    T: type,
+    gpa: Allocator,
+    current: *T,
+    ast: Ast,
+    zoir: Zoir,
+    diag: ?*Diagnostics,
+    options: Parser.Options,
+) error{ OutOfMemory, ParseZon }!void {
+    try parseZoirNodeAlloc(T, gpa, current, ast, zoir, .root, diag, options);
 }
 
 /// Like `fromZoir`, but the parse starts at `node` instead of root.
@@ -349,7 +469,7 @@ pub fn fromZoirNode(
     zoir: Zoir,
     node: Zoir.Node.Index,
     diag: ?*Diagnostics,
-    options: Options,
+    options: FromOptions,
 ) error{ParseZon}!T {
     comptime assert(!requiresAllocator(T));
     var buf: [0]u8 = .{};
@@ -357,6 +477,34 @@ pub fn fromZoirNode(
     return fromZoirNodeAlloc(
         T,
         failing_allocator.allocator(),
+        ast,
+        zoir,
+        node,
+        diag,
+        options,
+    ) catch |err| switch (err) {
+        error.OutOfMemory => unreachable, // Checked by comptime assertion above
+        else => |e| return e,
+    };
+}
+
+/// Like `updateZoir`, but the parse starts at `node` instead of root.
+pub fn updateFromZoirNode(
+    T: type,
+    current: *T,
+    ast: Ast,
+    zoir: Zoir,
+    node: Zoir.Node.Index,
+    diag: ?*Diagnostics,
+    options: UpdateFromOptions,
+) error{ParseZon}!void {
+    comptime assert(!requiresAllocator(T));
+    var buf: [0]u8 = .{};
+    var failing_allocator = std.heap.FixedBufferAllocator.init(&buf);
+    updateFromZoirNodeAlloc(
+        T,
+        failing_allocator.allocator(),
+        current,
         ast,
         zoir,
         node,
@@ -376,8 +524,37 @@ pub fn fromZoirNodeAlloc(
     zoir: Zoir,
     node: Zoir.Node.Index,
     diag: ?*Diagnostics,
-    options: Options,
+    options: FromOptions,
 ) error{ OutOfMemory, ParseZon }!T {
+    var out: T = undefined;
+    try parseZoirNodeAlloc(T, gpa, &out, ast, zoir, node, diag, options.toParserOptions());
+    return out;
+}
+
+/// Like `updateZoirNodeAlloc`, but the parse starts at `node` instead of root.
+pub fn updateFromZoirNodeAlloc(
+    T: type,
+    arena: Allocator,
+    current: *T,
+    ast: Ast,
+    zoir: Zoir,
+    node: Zoir.Node.Index,
+    diag: ?*Diagnostics,
+    options: UpdateFromOptions,
+) error{ OutOfMemory, ParseZon }!void {
+    return parseZoirNodeAlloc(T, arena, current, ast, zoir, node, diag, options.toParserOptions());
+}
+
+fn parseZoirNodeAlloc(
+    T: type,
+    gpa: Allocator,
+    out: *T,
+    ast: Ast,
+    zoir: Zoir,
+    node: Zoir.Node.Index,
+    diag: ?*Diagnostics,
+    options: Parser.Options,
+) error{ OutOfMemory, ParseZon }!void {
     comptime assert(canParseType(T));
 
     if (diag) |s| {
@@ -398,9 +575,7 @@ pub fn fromZoirNodeAlloc(
         .diag = diag,
     };
 
-    var out: T = undefined;
-    try parser.parseExprInto(node, &out);
-    return out;
+    try parser.parseExprInto(node, out);
 }
 
 /// Frees ZON values.
@@ -486,7 +661,14 @@ const Parser = struct {
     ast: Ast,
     zoir: Zoir,
     diag: ?*Diagnostics,
-    options: Options,
+    options: Parser.Options,
+    pointer_depth: usize = 0,
+
+    pub const Options = struct {
+        ignore_unknown_fields: bool,
+        free_on_error: bool,
+        ignore_missing_fields: bool,
+    };
 
     const ParseExprError = error{ ParseZon, OutOfMemory };
 
@@ -529,6 +711,8 @@ const Parser = struct {
                     );
                     errdefer self.gpa.free(slice);
                     const ptr = &slice[0];
+                    self.pointer_depth += 1;
+                    defer self.pointer_depth -= 1;
                     try self.parseExprInnerInto(node, ptr);
                     out.* = ptr;
                 },
@@ -883,17 +1067,19 @@ const Parser = struct {
         }
 
         // Fill in any missing default fields
-        inline for (field_found, 0..) |found, i| {
-            if (!found) {
-                const field_attrs = info.field_attrs[i];
-                if (field_attrs.defaultValue(info.field_types[i])) |default| {
-                    @field(out, info.field_names[i]) = default;
-                } else {
-                    return self.failNodeFmt(
-                        node,
-                        "missing required field {s}",
-                        .{info.field_names[i]},
-                    );
+        if (!self.options.ignore_missing_fields or self.pointer_depth > 0) {
+            inline for (field_found, 0..) |found, i| {
+                if (!found) {
+                    const field_attrs = info.field_attrs[i];
+                    if (field_attrs.defaultValue(info.field_types[i])) |default| {
+                        @field(out, info.field_names[i]) = default;
+                    } else {
+                        return self.failNodeFmt(
+                            node,
+                            "missing required field {s}",
+                            .{info.field_names[i]},
+                        );
+                    }
                 }
             }
         }
@@ -3597,4 +3783,199 @@ test "std.zon aligned pointers" {
     );
     defer free(gpa, found);
     try std.testing.expectEqualDeep(expected.inner, found.inner);
+}
+
+test "std.zon update semantics" {
+    // Test that the update logic works as expected
+
+    var arena_allocator: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena_allocator.deinit();
+    const arena = arena_allocator.allocator();
+
+    const Vector = struct { x: f32, y: f32, z: f32 };
+    const MyStruct = struct {
+        foo: u32 = 123,
+        bar: bool,
+        baz: struct {
+            a: [2]u32,
+            b: enum { c, d } = .d,
+        },
+        ptr: *Vector,
+        optional: ?u32 = null,
+        str: []const u8 = "hello, world",
+    };
+
+    var v: Vector = .{ .x = 1, .y = 2, .z = 3 };
+    var expected: MyStruct = .{
+        .foo = 10,
+        .bar = true,
+        .baz = .{ .a = .{ 1, 2 }, .b = .c },
+        .ptr = &v,
+    };
+    var found = expected;
+
+    try updateFromSliceAlloc(
+        MyStruct,
+        arena,
+        &found,
+        ".{}",
+        null,
+        .{},
+    );
+    try std.testing.expectEqual(expected, found);
+
+    try updateFromSliceAlloc(
+        MyStruct,
+        arena,
+        &found,
+        ".{ .bar = false }",
+        null,
+        .{},
+    );
+    expected.bar = false;
+    try std.testing.expectEqual(expected, found);
+
+    try updateFromSliceAlloc(
+        MyStruct,
+        arena,
+        &found,
+        ".{ .baz = .{ .a = .{ 2, 4 } } }",
+        null,
+        .{},
+    );
+    expected.baz.a[0] = 2;
+    expected.baz.a[1] = 4;
+    try std.testing.expectEqual(expected, found);
+
+    try updateFromSliceAlloc(
+        MyStruct,
+        arena,
+        &found,
+        ".{ .foo = 11, .baz = .{ .b = .d } }",
+        null,
+        .{},
+    );
+    expected.foo = 11;
+    expected.baz.b = .d;
+    try std.testing.expectEqual(expected, found);
+
+    try updateFromSliceAlloc(
+        MyStruct,
+        arena,
+        &found,
+        ".{ .optional = 10 }",
+        null,
+        .{},
+    );
+    expected.optional = 10;
+    try std.testing.expectEqual(expected, found);
+
+    try updateFromSliceAlloc(
+        MyStruct,
+        arena,
+        &found,
+        ".{ .optional = null }",
+        null,
+        .{},
+    );
+    expected.optional = null;
+    try std.testing.expectEqual(expected, found);
+
+    try updateFromSliceAlloc(
+        MyStruct,
+        arena,
+        &found,
+        ".{ .ptr = .{ .x = 10, .y = 20, .z = 30 } }",
+        null,
+        .{},
+    );
+    expected.ptr.x = 10;
+    expected.ptr.y = 20;
+    expected.ptr.z = 30;
+    try std.testing.expectEqualDeep(expected, found);
+
+    try updateFromSliceAlloc(
+        MyStruct,
+        arena,
+        &found,
+        ".{ .str = \"foo\" }",
+        null,
+        .{},
+    );
+    expected.str = "foo";
+    try std.testing.expectEqualDeep(expected, found);
+}
+
+test "std.zon variants" {
+    // Just a smoke test, we don't need to test each variant thoroughly because they all call into
+    // the same code.
+
+    var arena_allocator: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena_allocator.deinit();
+    const arena = arena_allocator.allocator();
+
+    const Struct = struct { a: u32, b: u32 };
+    const start: Struct = .{ .a = 10, .b = 20 };
+    const end: Struct = .{ .a = 100, .b = 20 };
+
+    // Update
+    {
+        const ast = try std.zig.Ast.parse(arena, ".{ .a = 100 }", .{ .mode = .zon });
+        const zoir = try ZonGen.generate(arena, ast, .{ .parse_str_lits = false });
+
+        var curr = start;
+        try updateFromSlice(Struct, arena, &curr, ".{ .a = 100 }", null, .{});
+        try std.testing.expectEqual(end, curr);
+
+        curr = start;
+        try updateFromSliceAlloc(Struct, arena, &curr, ".{ .a = 100 }", null, .{});
+        try std.testing.expectEqual(end, curr);
+
+        curr = start;
+        try updateFromZoir(Struct, &curr, ast, zoir, null, .{});
+        try std.testing.expectEqual(end, curr);
+
+        curr = start;
+        try updateFromZoirAlloc(Struct, arena, &curr, ast, zoir, null, .{});
+        try std.testing.expectEqual(end, curr);
+
+        curr = start;
+        try updateFromZoirNode(Struct, &curr, ast, zoir, .root, null, .{});
+        try std.testing.expectEqual(end, curr);
+
+        curr = start;
+        try updateFromZoirNodeAlloc(Struct, arena, &curr, ast, zoir, .root, null, .{});
+        try std.testing.expectEqual(end, curr);
+    }
+
+    // From
+    {
+        const ast = try std.zig.Ast.parse(arena, ".{ .a = 100, .b = 20 }", .{ .mode = .zon });
+        const zoir = try ZonGen.generate(arena, ast, .{ .parse_str_lits = false });
+
+        try std.testing.expectEqual(
+            end,
+            try fromSlice(Struct, arena, ".{ .a = 100, .b = 20 }", null, .{}),
+        );
+        try std.testing.expectEqual(
+            end,
+            try fromSliceAlloc(Struct, arena, ".{ .a = 100, .b = 20 }", null, .{}),
+        );
+        try std.testing.expectEqual(
+            try fromZoir(Struct, ast, zoir, null, .{}),
+            end,
+        );
+        try std.testing.expectEqual(
+            try fromZoirAlloc(Struct, arena, ast, zoir, null, .{}),
+            end,
+        );
+        try std.testing.expectEqual(
+            try fromZoirNode(Struct, ast, zoir, .root, null, .{}),
+            end,
+        );
+        try std.testing.expectEqual(
+            try fromZoirNodeAlloc(Struct, arena, ast, zoir, .root, null, .{}),
+            end,
+        );
+    }
 }
