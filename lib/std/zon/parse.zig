@@ -4,7 +4,6 @@
 //!
 //! Parsing from individual Zoir nodes is also available:
 //! * `fromZoir`/`fromZoirAlloc`
-//! * `fromZoirNode`/`fromZoirNodeAlloc`
 //!
 //! To update an existing values, see the `updateFrom*` variants.
 //!
@@ -293,21 +292,6 @@ pub const Diagnostics = struct {
 ///
 /// An allocator is still required for temporary allocations made during parsing.
 pub fn fromSlice(
-    /// The type to deserialize into. Only the following types are supported, unsupported types will
-    /// result in a compiler error:
-    ///
-    /// * Optionals of supported types
-    /// * Booleans
-    /// * Integers except for `comptime_int`
-    /// * Floats except for `comptime_float`
-    /// * Enums
-    /// * Single item pointers to supported types
-    /// * Slices of supported types
-    /// * Arrays of supported types
-    /// * Vectors of supported types
-    /// * Structures of supported types
-    /// * Tuples of supported types
-    /// * Unions
     T: type,
     gpa: Allocator,
     source: [:0]const u8,
@@ -379,7 +363,7 @@ fn parseSliceAlloc(
     defer if (diag == null) zoir.deinit(gpa);
 
     if (diag) |s| s.* = .{};
-    try parseZoirAlloc(T, gpa, current, ast, zoir, diag, options);
+    try parseZoirAlloc(T, gpa, current, ast, zoir, .root, diag, options);
 }
 
 /// Like `fromSlice`, but operates on `Zoir` instead of ZON source.
@@ -387,17 +371,17 @@ pub fn fromZoir(
     T: type,
     ast: Ast,
     zoir: Zoir,
+    node: Zoir.Node.Index,
     diag: ?*Diagnostics,
     options: FromOptions,
 ) error{ParseZon}!T {
     comptime assert(!requiresAllocator(T));
-    var buf: [0]u8 = .{};
-    var failing_allocator = std.heap.FixedBufferAllocator.init(&buf);
     return fromZoirAlloc(
         T,
-        failing_allocator.allocator(),
+        .failing,
         ast,
         zoir,
+        node,
         diag,
         options,
     ) catch |err| switch (err) {
@@ -412,18 +396,18 @@ pub fn updateFromZoir(
     current: *T,
     ast: Ast,
     zoir: Zoir,
+    node: Zoir.Node.Index,
     diag: ?*Diagnostics,
     options: UpdateFromOptions,
 ) error{ParseZon}!void {
     comptime assert(!requiresAllocator(T));
-    var buf: [0]u8 = .{};
-    var failing_allocator = std.heap.FixedBufferAllocator.init(&buf);
     updateFromZoirAlloc(
         T,
-        failing_allocator.allocator(),
+        .failing,
         current,
         ast,
         zoir,
+        node,
         diag,
         options,
     ) catch |err| switch (err) {
@@ -438,10 +422,13 @@ pub fn fromZoirAlloc(
     gpa: Allocator,
     ast: Ast,
     zoir: Zoir,
+    node: Zoir.Node.Index,
     diag: ?*Diagnostics,
     options: FromOptions,
 ) error{ OutOfMemory, ParseZon }!T {
-    return fromZoirNodeAlloc(T, gpa, ast, zoir, .root, diag, options);
+    var out: T = undefined;
+    try parseZoirAlloc(T, gpa, &out, ast, zoir, node, diag, options.toParserOptions());
+    return out;
 }
 
 /// Like updateSliceAlloc`, but operates on `Zoir` instead of ZON source.
@@ -451,108 +438,14 @@ pub fn updateFromZoirAlloc(
     current: *T,
     ast: Ast,
     zoir: Zoir,
+    node: Zoir.Node.Index,
     diag: ?*Diagnostics,
     options: UpdateFromOptions,
 ) error{ OutOfMemory, ParseZon }!void {
-    try parseZoirAlloc(T, gpa, current, ast, zoir, diag, options.toParserOptions());
+    return parseZoirAlloc(T, gpa, current, ast, zoir, node, diag, options.toParserOptions());
 }
 
 fn parseZoirAlloc(
-    T: type,
-    gpa: Allocator,
-    current: *T,
-    ast: Ast,
-    zoir: Zoir,
-    diag: ?*Diagnostics,
-    options: Parser.Options,
-) error{ OutOfMemory, ParseZon }!void {
-    try parseZoirNodeAlloc(T, gpa, current, ast, zoir, .root, diag, options);
-}
-
-/// Like `fromZoir`, but the parse starts at `node` instead of root.
-pub fn fromZoirNode(
-    T: type,
-    ast: Ast,
-    zoir: Zoir,
-    node: Zoir.Node.Index,
-    diag: ?*Diagnostics,
-    options: FromOptions,
-) error{ParseZon}!T {
-    comptime assert(!requiresAllocator(T));
-    var buf: [0]u8 = .{};
-    var failing_allocator = std.heap.FixedBufferAllocator.init(&buf);
-    return fromZoirNodeAlloc(
-        T,
-        failing_allocator.allocator(),
-        ast,
-        zoir,
-        node,
-        diag,
-        options,
-    ) catch |err| switch (err) {
-        error.OutOfMemory => unreachable, // Checked by comptime assertion above
-        else => |e| return e,
-    };
-}
-
-/// Like `updateZoir`, but the parse starts at `node` instead of root.
-pub fn updateFromZoirNode(
-    T: type,
-    current: *T,
-    ast: Ast,
-    zoir: Zoir,
-    node: Zoir.Node.Index,
-    diag: ?*Diagnostics,
-    options: UpdateFromOptions,
-) error{ParseZon}!void {
-    comptime assert(!requiresAllocator(T));
-    var buf: [0]u8 = .{};
-    var failing_allocator = std.heap.FixedBufferAllocator.init(&buf);
-    updateFromZoirNodeAlloc(
-        T,
-        failing_allocator.allocator(),
-        current,
-        ast,
-        zoir,
-        node,
-        diag,
-        options,
-    ) catch |err| switch (err) {
-        error.OutOfMemory => unreachable, // Checked by comptime assertion above
-        else => |e| return e,
-    };
-}
-
-/// Like `fromZoirAlloc`, but the parse starts at `node` instead of root.
-pub fn fromZoirNodeAlloc(
-    T: type,
-    gpa: Allocator,
-    ast: Ast,
-    zoir: Zoir,
-    node: Zoir.Node.Index,
-    diag: ?*Diagnostics,
-    options: FromOptions,
-) error{ OutOfMemory, ParseZon }!T {
-    var out: T = undefined;
-    try parseZoirNodeAlloc(T, gpa, &out, ast, zoir, node, diag, options.toParserOptions());
-    return out;
-}
-
-/// Like `updateZoirNodeAlloc`, but the parse starts at `node` instead of root.
-pub fn updateFromZoirNodeAlloc(
-    T: type,
-    gpa: Allocator,
-    current: *T,
-    ast: Ast,
-    zoir: Zoir,
-    node: Zoir.Node.Index,
-    diag: ?*Diagnostics,
-    options: UpdateFromOptions,
-) error{ OutOfMemory, ParseZon }!void {
-    return parseZoirNodeAlloc(T, gpa, current, ast, zoir, node, diag, options.toParserOptions());
-}
-
-fn parseZoirNodeAlloc(
     T: type,
     gpa: Allocator,
     out: *T,
@@ -3760,12 +3653,7 @@ test "std.zon no alloc" {
 
     try std.testing.expectEqual(
         Nested{ 1, 2, .{ 3, 4 } },
-        try fromZoir(Nested, ast, zoir, null, .{}),
-    );
-
-    try std.testing.expectEqual(
-        Nested{ 1, 2, .{ 3, 4 } },
-        try fromZoirNode(Nested, ast, zoir, .root, null, .{}),
+        try fromZoir(Nested, ast, zoir, .root, null, .{}),
     );
 }
 
@@ -3974,19 +3862,11 @@ test "std.zon variants" {
         try std.testing.expectEqual(end, curr);
 
         curr = start;
-        try updateFromZoir(Struct, &curr, ast, zoir, null, .{});
+        try updateFromZoir(Struct, &curr, ast, zoir, .root, null, .{});
         try std.testing.expectEqual(end, curr);
 
         curr = start;
-        try updateFromZoirAlloc(Struct, gpa, &curr, ast, zoir, null, .{});
-        try std.testing.expectEqual(end, curr);
-
-        curr = start;
-        try updateFromZoirNode(Struct, &curr, ast, zoir, .root, null, .{});
-        try std.testing.expectEqual(end, curr);
-
-        curr = start;
-        try updateFromZoirNodeAlloc(Struct, gpa, &curr, ast, zoir, .root, null, .{});
+        try updateFromZoirAlloc(Struct, gpa, &curr, ast, zoir, .root, null, .{});
         try std.testing.expectEqual(end, curr);
     }
 
@@ -4006,19 +3886,11 @@ test "std.zon variants" {
             try fromSliceAlloc(Struct, gpa, ".{ .a = 100, .b = 20 }", null, .{}),
         );
         try std.testing.expectEqual(
-            try fromZoir(Struct, ast, zoir, null, .{}),
+            try fromZoir(Struct, ast, zoir, .root, null, .{}),
             end,
         );
         try std.testing.expectEqual(
-            try fromZoirAlloc(Struct, gpa, ast, zoir, null, .{}),
-            end,
-        );
-        try std.testing.expectEqual(
-            try fromZoirNode(Struct, ast, zoir, .root, null, .{}),
-            end,
-        );
-        try std.testing.expectEqual(
-            try fromZoirNodeAlloc(Struct, gpa, ast, zoir, .root, null, .{}),
+            try fromZoirAlloc(Struct, gpa, ast, zoir, .root, null, .{}),
             end,
         );
     }
