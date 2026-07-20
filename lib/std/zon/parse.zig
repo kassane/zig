@@ -1,11 +1,10 @@
-//! The simplest way to parse ZON at runtime is to use `fromSlice`/`fromSliceAlloc`.
+//! Use `fromSlice`/`fromSliceAlloc` to parse a ZON string into a Zig value. Human readable errors
+//! are written to an out parameter.
 //!
-//! Parsing from individual Zoir nodes is also available:
-//! * `fromZoir`/`fromZoirAlloc`
+//! If your data is already available in tree form, consider `fromZoir`/`fromZoirAlloc`.
 //!
-//! To update an existing values, see the `updateFrom*` variants. To get human readable errors, use
-//! the `errors` option. For lower level control over parsing, see `std.zig.Zoir`. For importing ZON
-//! at compile time, use `@import`.
+//! To parse into an existing value, see the `updateFrom*` variants. For lower level control over
+//! parsing, see `std.zig.ZonGen`. For importing ZON at compile time, use `@import`.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -91,7 +90,8 @@ pub const Error = struct {
     };
 };
 
-/// Errors encountered while parsing ZON.
+/// Errors encountered while parsing ZON. Consider logging this using the default format method to
+/// provide users with feedback on the failure.
 pub const Errors = struct {
     arena: Allocator,
     list: std.ArrayList(Error),
@@ -160,9 +160,11 @@ pub fn fromSlice(T: type, options: FromSliceOptions) error{ OutOfMemory, ParseZo
     });
 }
 
-/// Similar to `fromSlice`, but updates an existing value `current`. Fields not specified by ZON are
-/// left at their current values. Pointers are replaced with new values not mutated in place. On
-/// failure, values that were updated prior to the failure are left updated.
+/// Similar to `fromSlice`, but updates `value` in place which is assumed to hold a valid value. Any
+/// unspecified fields are left unchanged.
+///
+/// Untagged unions and slices are replaced in their entiredy. If an error occurs while parsing,
+/// `value` remains valid but may be partially updated.
 pub fn updateFromSlice(
     T: type,
     value: *T,
@@ -181,7 +183,7 @@ pub fn updateFromSlice(
 pub const FromSliceAllocOptions = struct {
     /// Used for scratch allocations.
     gpa: Allocator,
-    /// Owns the result.
+    /// Used for any allocations required by the out type.
     arena: Allocator,
     /// The ZON source to parse.
     source: [:0]const u8,
@@ -303,7 +305,7 @@ pub fn updateFromZoir(
 }
 
 pub const FromZoirAllocOptions = struct {
-    /// Owns the result.
+    /// Used for any allocations required by the out type.
     arena: Allocator,
     /// The AST for this ZON value.
     ast: *const Ast,

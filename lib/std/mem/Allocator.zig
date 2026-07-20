@@ -196,7 +196,6 @@ pub inline fn createAdvancedWithRetAddr(
     return ptr;
 }
 
-
 /// `ptr` should be the return value of `create`, or otherwise
 /// have the same address and alignment property.
 pub fn destroy(self: Allocator, ptr: anytype) void {
