@@ -199,10 +199,8 @@ pub fn fromSliceAlloc(T: type, options: FromSliceAllocOptions) error{ OutOfMemor
         .arena = options.arena,
         .source = options.source,
         .diag = options.diag,
-        .parser_options = .{
-            .ignore_unknown_fields = options.ignore_unknown_fields,
-            .ignore_missing_fields = false,
-        },
+        .ignore_unknown_fields = options.ignore_unknown_fields,
+        .initialized = false,
     });
     return value;
 }
@@ -218,10 +216,8 @@ pub fn updateFromSliceAlloc(
         .arena = options.arena,
         .source = options.source,
         .diag = options.diag,
-        .parser_options = .{
-            .ignore_unknown_fields = options.ignore_unknown_fields,
-            .ignore_missing_fields = true,
-        },
+        .ignore_unknown_fields = options.ignore_unknown_fields,
+        .initialized = true,
     });
 }
 
@@ -230,7 +226,8 @@ const ParseSliceAllocOptions = struct {
     arena: Allocator,
     source: [:0]const u8,
     diag: ?*Diagnostics,
-    parser_options: Parser.Options,
+    ignore_unknown_fields: bool,
+    initialized: bool,
 };
 
 fn parseSliceAlloc(
@@ -250,7 +247,8 @@ fn parseSliceAlloc(
         .zoir = &zoir,
         .node = .root,
         .diag = options.diag,
-        .parser_options = options.parser_options,
+        .ignore_unknown_fields = options.ignore_unknown_fields,
+        .initialized = options.initialized,
     });
 }
 
@@ -327,10 +325,8 @@ pub fn fromZoirAlloc(T: type, options: FromZoirAllocOptions) error{ OutOfMemory,
         .zoir = options.zoir,
         .node = options.node,
         .diag = options.diag,
-        .parser_options = .{
-            .ignore_unknown_fields = options.ignore_unknown_fields,
-            .ignore_missing_fields = false,
-        },
+        .ignore_unknown_fields = options.ignore_unknown_fields,
+        .initialized = false,
     });
     return value;
 }
@@ -347,10 +343,8 @@ pub fn updateFromZoirAlloc(
         .zoir = options.zoir,
         .node = options.node,
         .diag = options.diag,
-        .parser_options = .{
-            .ignore_unknown_fields = options.ignore_unknown_fields,
-            .ignore_missing_fields = true,
-        },
+        .ignore_unknown_fields = options.ignore_unknown_fields,
+        .initialized = true,
     });
 }
 
@@ -360,7 +354,8 @@ const ParseZoirAllocOptions = struct {
     zoir: *const Zoir,
     node: Zoir.Node.Index,
     diag: ?*Diagnostics,
-    parser_options: Parser.Options,
+    ignore_unknown_fields: bool,
+    initialized: bool,
 };
 
 fn parseZoirAlloc(
@@ -396,11 +391,11 @@ fn parseZoirAlloc(
         .arena = options.arena,
         .ast = options.ast,
         .zoir = options.zoir,
-        .options = options.parser_options,
+        .ignore_unknown_fields = options.ignore_unknown_fields,
         .diag = options.diag,
     };
 
-    try parser.parseExprInto(options.node, value);
+    try parser.parseExprInto(options.node, value, options.initialized);
 }
 
 fn requiresAllocator(T: type) bool {
@@ -429,18 +424,17 @@ const Parser = struct {
     ast: *const Ast,
     zoir: *const Zoir,
     diag: ?*Diagnostics,
-    options: Parser.Options,
-    pointer_depth: usize = 0,
-
-    pub const Options = struct {
-        ignore_unknown_fields: bool,
-        ignore_missing_fields: bool,
-    };
+    ignore_unknown_fields: bool,
 
     const ParseExprError = error{ ParseZon, OutOfMemory };
 
-    fn parseExprInto(self: *@This(), node: Zoir.Node.Index, out: anytype) ParseExprError!void {
-        return self.parseExprInnerInto(node, out) catch |err| switch (err) {
+    fn parseExprInto(
+        self: *@This(),
+        node: Zoir.Node.Index,
+        out: anytype,
+        initialized: bool,
+    ) ParseExprError!void {
+        return self.parseExprInnerInto(node, out, initialized) catch |err| switch (err) {
             error.WrongType => return self.failExpectedType(@TypeOf(out.*), node),
             else => |e| return e,
         };
@@ -452,6 +446,7 @@ const Parser = struct {
         self: *@This(),
         node: Zoir.Node.Index,
         out: anytype,
+        initialized: bool,
     ) ParseExprInnerError!void {
         if (@TypeOf(out.*) == Zoir.Node.Index) {
             out.* = node;
@@ -462,9 +457,9 @@ const Parser = struct {
             .optional => |optional| if (node.get(self.zoir) == .null) {
                 out.* = null;
             } else {
-                var new: optional.child = undefined;
-                try self.parseExprInnerInto(node, &new);
-                out.* = new;
+                const child_initialized = initialized and out.* != null;
+                if (!child_initialized) out.* = @as(optional.child, undefined);
+                try self.parseExprInnerInto(node, &out.*.?, child_initialized);
             },
             .bool => out.* = try self.parseBool(node),
             .int => out.* = try self.parseInt(@TypeOf(out.*), node),
@@ -472,23 +467,31 @@ const Parser = struct {
             .@"enum" => out.* = try self.parseEnumLiteral(@TypeOf(out.*), node),
             .pointer => |pointer| switch (pointer.size) {
                 .one => {
-                    const slice = try self.arena.alignedAlloc(
-                        pointer.child,
-                        if (pointer.attrs.@"align") |a| .fromByteUnits(a) else null,
-                        1,
+                    // Get a pointer to update
+                    const new = b: {
+                        // If the existing value is initialized and non const, use it
+                        if (initialized and !pointer.attrs.@"const") break :b out.*;
+                        // Otherwise, allocate new memory
+                        const new = &(try self.arena.alignedAlloc(
+                            pointer.child,
+                            if (pointer.attrs.@"align") |a| .fromByteUnits(a) else null,
+                            1,
+                        ))[0];
+                        // If the original value was initialized, dupe it into the new memory
+                        if (initialized) new.* = out.*.*;
+                        break :b new;
+                    };
+                    try self.parseExprInnerInto(
+                        node,
+                        new,
+                        initialized,
                     );
-                    const new = &slice[0];
-                    {
-                        self.pointer_depth += 1;
-                        defer self.pointer_depth -= 1;
-                        try self.parseExprInnerInto(node, new);
-                    }
                     out.* = new;
                 },
                 .slice => {
+                    // Slices are replaced wholesale since ZON doesn't have syntax for specifying
+                    // just a part of a slice.
                     const new = b: {
-                        self.pointer_depth += 1;
-                        defer self.pointer_depth -= 1;
                         const new = try self.parseSlicePointer(@TypeOf(out.*), node);
                         break :b new;
                     };
@@ -501,8 +504,8 @@ const Parser = struct {
             .@"struct" => |@"struct"| if (@"struct".is_tuple)
                 try self.parseTupleInto(node, out)
             else
-                try self.parseStructInto(node, out),
-            .@"union" => try self.parseUnionInto(node, out),
+                try self.parseStructInto(node, out, initialized),
+            .@"union" => try self.parseUnionInto(node, out, initialized),
 
             else => comptime unreachable,
         }
@@ -714,7 +717,7 @@ const Parser = struct {
 
         // Parse the elements and return the slice
         for (slice, 0..) |*elem, i| {
-            try self.parseExprInto(nodes.at(@intCast(i)), elem);
+            try self.parseExprInto(nodes.at(@intCast(i)), elem, false);
         }
 
         return slice;
@@ -746,7 +749,7 @@ const Parser = struct {
 
         // Parse the elements and return the array
         inline for (out, 0..) |*elem, i| {
-            try self.parseExprInto(nodes.at(@intCast(i)), elem);
+            try self.parseExprInto(nodes.at(@intCast(i)), elem, false);
         }
 
         if (array.sentinel()) |s| {
@@ -761,7 +764,12 @@ const Parser = struct {
         out.* = array;
     }
 
-    fn parseStructInto(self: *@This(), node: Zoir.Node.Index, out: anytype) !void {
+    fn parseStructInto(
+        self: *@This(),
+        node: Zoir.Node.Index,
+        out: anytype,
+        initialized: bool,
+    ) !void {
         const repr = node.get(self.zoir);
         const fields: @FieldType(Zoir.Node, "struct_literal") = switch (repr) {
             .struct_literal => |nodes| nodes,
@@ -787,7 +795,7 @@ const Parser = struct {
         for (0..fields.names.len) |i| {
             const name = fields.names[i].get(self.zoir);
             const field_index = field_indices.get(name) orelse {
-                if (self.options.ignore_unknown_fields) continue;
+                if (self.ignore_unknown_fields) continue;
                 return self.failUnexpected(@TypeOf(out.*), "field", node, i, name);
             };
             if (field_index == comptime_field) {
@@ -802,10 +810,10 @@ const Parser = struct {
             switch (field_index) {
                 inline 0...(info.field_names.len - 1) => |j| {
                     if (info.field_attrs[j].@"comptime") unreachable;
-
                     try self.parseExprInto(
                         fields.vals.at(@intCast(i)),
                         &@field(out, info.field_names[j]),
+                        initialized,
                     );
                 },
                 else => unreachable, // Can't be out of bounds
@@ -813,7 +821,7 @@ const Parser = struct {
         }
 
         // Fill in any missing default fields
-        if (!self.options.ignore_missing_fields or self.pointer_depth > 0) {
+        if (!initialized) {
             inline for (field_found, 0..) |found, i| {
                 if (!found) {
                     const field_attrs = info.field_attrs[i];
@@ -860,20 +868,28 @@ const Parser = struct {
                 if (info.field_attrs[i].@"comptime") {
                     return self.failComptimeField(node, i);
                 } else {
-                    try self.parseExprInto(nodes.at(i), &out[i]);
+                    try self.parseExprInto(nodes.at(i), &out[i], false);
                 }
             }
         }
     }
 
-    fn parseUnionInto(self: *@This(), node: Zoir.Node.Index, out: anytype) !void {
+    fn parseUnionInto(
+        self: *@This(),
+        node: Zoir.Node.Index,
+        out: anytype,
+        initialized: bool,
+    ) !void {
         const @"union" = @typeInfo(@TypeOf(out.*)).@"union";
 
         if (@"union".field_names.len == 0) comptime unreachable;
 
         // Gather info on the fields
         const field_indices = b: {
-            comptime var kvs_list: [@"union".field_names.len]struct { []const u8, usize } = undefined;
+            comptime var kvs_list: [@"union".field_names.len]struct {
+                []const u8,
+                usize,
+            } = undefined;
             inline for (@"union".field_names, 0..) |field_name, i| {
                 kvs_list[i] = .{ field_name, i };
             }
@@ -893,7 +909,13 @@ const Parser = struct {
                 const field_index = b: {
                     const field_name_str = field_name.get(self.zoir);
                     break :b field_indices.get(field_name_str) orelse
-                        return self.failUnexpected(@TypeOf(out.*), "field", node, null, field_name_str);
+                        return self.failUnexpected(
+                            @TypeOf(out.*),
+                            "field",
+                            node,
+                            null,
+                            field_name_str,
+                        );
                 };
 
                 // Initialize the union from the given field.
@@ -926,8 +948,25 @@ const Parser = struct {
                         if (@"union".field_types[i] == void) {
                             return self.failNode(field_val, "expected type 'void'");
                         } else {
-                            out.* = @unionInit(@TypeOf(out.*), @"union".field_names[i], undefined);
-                            try self.parseExprInto(field_val, &@field(out.*, @"union".field_names[i]));
+                            const field_initialized = b: {
+                                if (!initialized) break :b false;
+                                if (@"union".tag_type == null) break :b false;
+                                const tag = @field(@"union".tag_type.?, @"union".field_names[i]);
+                                if (out.* != tag) break :b false;
+                                break :b true;
+                            };
+                            if (!field_initialized) {
+                                out.* = @unionInit(
+                                    @TypeOf(out.*),
+                                    @"union".field_names[i],
+                                    undefined,
+                                );
+                            }
+                            try self.parseExprInto(
+                                field_val,
+                                &@field(out.*, @"union".field_names[i]),
+                                field_initialized,
+                            );
                         }
                     },
                     else => unreachable, // Can't be out of bounds
@@ -4250,7 +4289,7 @@ test "std.zon aligned pointers" {
     try std.testing.expectEqualDeep(expected.inner, found.inner);
 }
 
-test "std.zon update" {
+test "std.zon update basic" {
     const gpa = std.testing.allocator;
     var arena_allocator: ArenaAllocator = .init(gpa);
     defer arena_allocator.deinit();
@@ -4360,6 +4399,178 @@ test "std.zon update" {
     });
     expected.str = "foo";
     try std.testing.expectEqualDeep(expected, found);
+}
+
+test "std.zon update optionals" {
+    const gpa = std.testing.allocator;
+    var arena_allocator: ArenaAllocator = .init(gpa);
+    defer arena_allocator.deinit();
+    const arena = arena_allocator.allocator();
+
+    const MyStruct = struct {
+        foo: ?struct { bar: u32 = 1, baz: u32 = 2, qux: u32 },
+    };
+
+    // Updating an optional that starts out null should fill in any default fields we left off
+    {
+        var expected: MyStruct = .{ .foo = null };
+        var found = expected;
+        try updateFromSlice(MyStruct, &found, .{
+            .gpa = gpa,
+            .source = ".{ .foo = .{ .qux = 3 } }",
+            .diag = null,
+        });
+        expected.foo = .{ .qux = 3 };
+        try std.testing.expectEqual(expected, found);
+    }
+
+    // Updating an optional that starts out null should error if we leave off required fields.
+    {
+        var found: MyStruct = .{ .foo = null };
+        var diag: Diagnostics = .init(arena);
+        try std.testing.expectError(error.ParseZon, updateFromSlice(MyStruct, &found, .{
+            .gpa = gpa,
+            .source = ".{ .foo = .{} }",
+            .diag = &diag,
+        }));
+        try std.testing.expectFmt("1:12: error: missing required field qux\n", "{f}", .{diag});
+    }
+
+    // Updating an optional that starts out non-null should preserve any values we leave off. It's
+    // also okay to leave off required fields since they were already set.
+    {
+        var expected: MyStruct = .{
+            .foo = .{ .bar = 10, .baz = 20, .qux = 30 },
+        };
+        var found = expected;
+        try updateFromSlice(MyStruct, &found, .{
+            .gpa = gpa,
+            .source = ".{ .foo = .{ .baz = 200 } }",
+            .diag = null,
+        });
+        expected.foo.?.baz = 200;
+        try std.testing.expectEqual(expected, found);
+    }
+}
+
+test "std.zon update optional pointers" {
+    const gpa = std.testing.allocator;
+    var arena_allocator: ArenaAllocator = .init(gpa);
+    defer arena_allocator.deinit();
+    const arena = arena_allocator.allocator();
+
+    const MyStruct = struct {
+        foo: ?*const struct { bar: u32 = 1, baz: u32 = 2, qux: u32 },
+    };
+
+    // Just a smoke test since its the combination of behavior we've already tested separately
+    {
+        var expected: MyStruct = .{ .foo = null };
+        var found = expected;
+        try updateFromSliceAlloc(MyStruct, &found, .{
+            .gpa = gpa,
+            .arena = arena,
+            .source = ".{ .foo = .{ .qux = 3 } }",
+            .diag = null,
+        });
+        expected.foo = &.{ .qux = 3 };
+        try std.testing.expectEqualDeep(expected, found);
+    }
+}
+
+test "std.zon update pointers" {
+    const gpa = std.testing.allocator;
+    var arena_allocator: ArenaAllocator = .init(gpa);
+    defer arena_allocator.deinit();
+    const arena = arena_allocator.allocator();
+
+    // Updating a pointer should leave fields we don't specify unchanged
+    {
+        const MyStruct = struct {
+            foo: *struct { bar: u32 = 10, baz: u32 = 20, qux: u32 },
+        };
+        var ptr: @typeInfo(@FieldType(MyStruct, "foo")).pointer.child = .{ .qux = 3 };
+        var expected: MyStruct = .{ .foo = &ptr };
+        var found = expected;
+        try updateFromSliceAlloc(MyStruct, &found, .{
+            .gpa = gpa,
+            .arena = arena,
+            .source = ".{ .foo = .{ .bar = 100 } }",
+            .diag = null,
+        });
+        expected.foo.bar = 100;
+        try std.testing.expectEqualDeep(expected, found);
+    }
+
+    // Same thing, but for const pointers
+    {
+        const MyStruct = struct {
+            foo: *const struct { bar: u32 = 10, baz: u32 = 20, qux: u32 },
+        };
+        var expected: MyStruct = .{ .foo = &.{ .qux = 3 } };
+        var found = expected;
+        try updateFromSliceAlloc(MyStruct, &found, .{
+            .gpa = gpa,
+            .arena = arena,
+            .source = ".{ .foo = .{ .bar = 100 } }",
+            .diag = null,
+        });
+        expected.foo = &.{ .bar = 100, .baz = 20, .qux = 3 };
+        try std.testing.expectEqualDeep(expected, found);
+    }
+}
+
+test "std.zon update unions" {
+    const gpa = std.testing.allocator;
+    var arena_allocator: ArenaAllocator = .init(gpa);
+    defer arena_allocator.deinit();
+    const arena = arena_allocator.allocator();
+
+    const MyUnion = union(enum) {
+        none: void,
+        foo: struct { bar: u32 = 10, baz: u32 = 20, qux: u32 },
+    };
+
+    // Updating a union to a new field should fill in any default sub-fields we left off
+    {
+        var expected: MyUnion = .none;
+        var found = expected;
+        try updateFromSlice(MyUnion, &found, .{
+            .gpa = gpa,
+            .source = ".{ .foo = .{ .qux = 3 } }",
+            .diag = null,
+        });
+        expected = .{ .foo = .{ .qux = 3 } };
+        try std.testing.expectEqual(expected, found);
+    }
+
+    // Updating a union to a new field should error if we leave off required sub-fields
+    {
+        var found: MyUnion = .none;
+        var diag: Diagnostics = .init(arena);
+        try std.testing.expectError(error.ParseZon, updateFromSlice(MyUnion, &found, .{
+            .gpa = gpa,
+            .source = ".{ .foo = .{} }",
+            .diag = &diag,
+        }));
+        try std.testing.expectFmt("1:12: error: missing required field qux\n", "{f}", .{diag});
+    }
+
+    // Updating a union should preseve any sub-fields that we left off. It's also okay to leave off
+    // required fields since they were already set.
+    {
+        var expected: MyUnion = .{
+            .foo = .{ .bar = 10, .baz = 20, .qux = 30 },
+        };
+        var found = expected;
+        try updateFromSlice(MyUnion, &found, .{
+            .gpa = gpa,
+            .source = ".{ .foo = .{ .baz = 200 } }",
+            .diag = null,
+        });
+        expected.foo.baz = 200;
+        try std.testing.expectEqual(expected, found);
+    }
 }
 
 test "std.zon variants" {
