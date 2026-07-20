@@ -473,11 +473,10 @@ const Parser = struct {
                         // If the existing value is initialized and non const, use it
                         if (initialized and !pointer.attrs.@"const") break :b out.*;
                         // Otherwise, allocate new memory
-                        const new = &(try self.arena.alignedAlloc(
+                        const new = try self.arena.alignedCreate(
                             pointer.child,
                             if (pointer.attrs.@"align") |a| .fromByteUnits(a) else null,
-                            1,
-                        ))[0];
+                        );
                         // If the original value was initialized, dupe it into the new memory
                         if (initialized) new.* = out.*.*;
                         break :b new;
