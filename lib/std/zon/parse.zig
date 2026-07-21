@@ -459,10 +459,12 @@ const Parser = struct {
         switch (@typeInfo(@TypeOf(out.*))) {
             .optional => |optional| if (node.get(self.zoir) == .null) {
                 out.* = null;
+            } else if (initialized and out.* != null) {
+                try self.parseExprInnerInto(node, &out.*.?, true);
             } else {
-                const child_initialized = initialized and out.* != null;
-                if (!child_initialized) out.* = @as(optional.child, undefined);
-                try self.parseExprInnerInto(node, &out.*.?, child_initialized);
+                var some: optional.child = undefined;
+                try self.parseExprInnerInto(node, &some, false);
+                out.* = some;
             },
             .bool => out.* = try self.parseBool(node),
             .int => out.* = try self.parseInt(@TypeOf(out.*), node),
