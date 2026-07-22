@@ -346,6 +346,7 @@ pub const Operation = union(enum) {
         socket_handle: net.Socket.Handle,
         message_buffer: []net.IncomingMessage,
         data_buffer: []u8,
+        control_buffer: []u8 = &.{},
         flags: net.ReceiveFlags,
 
         pub const Error = error{

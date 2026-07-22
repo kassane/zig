@@ -924,22 +924,20 @@ pub const ReceiveFlags = packed struct(u8) {
     _: u5 = 0,
 };
 
+/// Fields are populated by receive functions.
 pub const IncomingMessage = struct {
-    /// Populated by receive functions.
     from: IpAddress,
-    /// Populated by receive functions, points into the caller-supplied buffer.
+    /// Points into caller-supplied buffer.
     data: []u8,
-    /// Supplied by caller before calling receive functions; mutated by receive
-    /// functions.
+    /// Points into caller-supplied buffer.
     control: []u8,
-    /// Populated by receive functions.
     flags: Flags,
 
-    /// Useful for initializing before calling `receiveManyTimeout`.
+    /// Deprecated. Initialize with `undefined`.
     pub const init: IncomingMessage = .{
         .from = undefined,
         .data = undefined,
-        .control = &.{},
+        .control = undefined,
         .flags = undefined,
     };
 
@@ -1162,13 +1160,30 @@ pub const Socket = struct {
     /// Waits for data. Connectionless.
     ///
     /// See also:
+    /// * `receiveWithControl`
     /// * `receiveTimeout`
+    /// * `receiveWithControlTimeout`
+    /// * `receiveManyTimeout`
+    /// * `receiveManyWithControlTimeout`
     pub fn receive(s: *const Socket, io: Io, buffer: []u8) ReceiveError!IncomingMessage {
-        var message: IncomingMessage = .init;
+        return s.receiveWithControl(io, buffer, &.{});
+    }
+
+    /// Waits for data, allowing the reception of control data. Connectionless.
+    ///
+    /// See also:
+    /// * `receive`
+    /// * `receiveTimeout`
+    /// * `receiveWithControlTimeout`
+    /// * `receiveManyTimeout`
+    /// * `receiveManyWithControlTimeout`
+    pub fn receiveWithControl(s: *const Socket, io: Io, buffer: []u8, control: []u8) ReceiveError!IncomingMessage {
+        var message: IncomingMessage = undefined;
         const maybe_err, const count = (try io.operate(.{ .net_receive = .{
             .socket_handle = s.handle,
             .message_buffer = (&message)[0..1],
             .data_buffer = buffer,
+            .control_buffer = control,
             .flags = .{},
         } })).net_receive;
         if (maybe_err) |err| return err;
@@ -1184,18 +1199,42 @@ pub const Socket = struct {
     ///
     /// See also:
     /// * `receive`
+    /// * `receiveWithControl`
+    /// * `receiveWithControlTimeout`
     /// * `receiveManyTimeout`
+    /// * `receiveManyWithControlTimeout`
     pub fn receiveTimeout(
         s: *const Socket,
         io: Io,
         buffer: []u8,
         timeout: Io.Timeout,
     ) ReceiveTimeoutError!IncomingMessage {
-        var message: IncomingMessage = .init;
+        return s.receiveWithControlTimeout(io, buffer, &.{}, timeout);
+    }
+
+    /// Waits for data, allowing the reception of control data. Connectionless.
+    ///
+    /// Returns `error.Timeout` if no message arrives early enough.
+    ///
+    /// See also:
+    /// * `receive`
+    /// * `receiveWithControl`
+    /// * `receiveTimeout`
+    /// * `receiveManyTimeout`
+    /// * `receiveManyWithControlTimeout`
+    pub fn receiveWithControlTimeout(
+        s: *const Socket,
+        io: Io,
+        buffer: []u8,
+        control: []u8,
+        timeout: Io.Timeout,
+    ) ReceiveTimeoutError!IncomingMessage {
+        var message: IncomingMessage = undefined;
         const maybe_err, const count = (try io.operateTimeout(.{ .net_receive = .{
             .socket_handle = s.handle,
             .message_buffer = (&message)[0..1],
             .data_buffer = buffer,
+            .control_buffer = control,
             .flags = .{},
         } }, timeout)).net_receive;
         if (maybe_err) |err| return err;
@@ -1211,14 +1250,39 @@ pub const Socket = struct {
     ///
     /// See also:
     /// * `receive`
+    /// * `receiveWithControl`
     /// * `receiveTimeout`
+    /// * `receiveWithControlTimeout`
+    /// * `receiveManyWithControlTimeout`
     pub fn receiveManyTimeout(
         s: *const Socket,
         io: Io,
-        /// Function assumes each element has initialized `control` field.
-        /// Initializing with `IncomingMessage.init` may be helpful.
         message_buffer: []IncomingMessage,
         data_buffer: []u8,
+        flags: ReceiveFlags,
+        timeout: Io.Timeout,
+    ) struct { ?ReceiveTimeoutError, usize } {
+        return s.receiveManyWithControlTimeout(io, message_buffer, data_buffer, &.{}, flags, timeout);
+    }
+
+    /// Waits until at least one message is delivered, possibly returning more
+    /// than one message. Allows reception of control data. Connectionless.
+    ///
+    /// Returns number of messages received, or `error.Timeout` if no message
+    /// arrives early enough.
+    ///
+    /// See also:
+    /// * `receive`
+    /// * `receiveWithControl`
+    /// * `receiveTimeout`
+    /// * `receiveWithControlTimeout`
+    /// * `receiveManyTimeout`
+    pub fn receiveManyWithControlTimeout(
+        s: *const Socket,
+        io: Io,
+        message_buffer: []IncomingMessage,
+        data_buffer: []u8,
+        control_buffer: []u8,
         flags: ReceiveFlags,
         timeout: Io.Timeout,
     ) struct { ?ReceiveTimeoutError, usize } {
@@ -1226,6 +1290,7 @@ pub const Socket = struct {
             .socket_handle = s.handle,
             .message_buffer = message_buffer,
             .data_buffer = data_buffer,
+            .control_buffer = control_buffer,
             .flags = flags,
         } }, timeout) catch |err| return .{ err, 0 };
         return result.net_receive;

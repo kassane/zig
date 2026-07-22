@@ -2095,7 +2095,7 @@ fn operate(userdata: ?*anyopaque, operation: Io.Operation) Io.Cancelable!Io.Oper
         },
         .net_receive => |o| .{
             .net_receive = r: {
-                const opt_err, const n = ev.netReceive(&maybe_sync.cancel_region, o.socket_handle, o.message_buffer, o.data_buffer, o.flags);
+                const opt_err, const n = ev.netReceive(&maybe_sync.cancel_region, o.socket_handle, o.message_buffer, o.data_buffer, o.control_buffer, o.flags);
                 break :r .{
                     if (opt_err) |err| switch (err) {
                         error.Canceled => |e| return e,
@@ -5075,15 +5075,18 @@ fn netReceive(
     handle: net.Socket.Handle,
     message_buffer: []net.IncomingMessage,
     data_buffer: []u8,
+    control_buffer: []u8,
     flags: net.ReceiveFlags,
 ) struct { ?net.Socket.ReceiveError, usize } {
     var message_i: usize = 0;
     var data_i: usize = 0;
+    var control_i: usize = 0;
 
     while (true) {
         if (message_buffer.len - message_i == 0) return .{ null, message_i };
         const message = &message_buffer[message_i];
         const remaining_data_buffer = data_buffer[data_i..];
+        const remaining_control_buffer = control_buffer[control_i..];
         var storage: PosixAddress = undefined;
         var iov: iovec = .{ .base = remaining_data_buffer.ptr, .len = remaining_data_buffer.len };
         var msg: linux.msghdr = .{
@@ -5091,8 +5094,8 @@ fn netReceive(
             .namelen = @sizeOf(PosixAddress),
             .iov = (&iov)[0..1],
             .iovlen = 1,
-            .control = message.control.ptr,
-            .controllen = @intCast(message.control.len),
+            .control = remaining_control_buffer.ptr,
+            .controllen = @intCast(remaining_control_buffer.len),
             .flags = undefined,
         };
 
@@ -5121,11 +5124,13 @@ fn netReceive(
         switch (completion.errno()) {
             .SUCCESS => {
                 const data = remaining_data_buffer[0..@intCast(completion.result)];
+                const control = remaining_control_buffer[0..@intCast(msg.controllen)];
                 data_i += data.len;
+                control_i += @intCast(msg.controllen);
                 message.* = .{
                     .from = addressFromPosix(&storage),
                     .data = data,
-                    .control = if (msg.control) |ptr| @as([*]u8, @ptrCast(ptr))[0..msg.controllen] else message.control,
+                    .control = control,
                     .flags = .{
                         .eor = msg.flags & linux.MSG.EOR != 0,
                         .trunc = msg.flags & linux.MSG.TRUNC != 0,
