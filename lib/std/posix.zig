@@ -150,6 +150,7 @@ pub const blkcnt_t = system.blkcnt_t;
 pub const blksize_t = system.blksize_t;
 pub const clock_t = system.clock_t;
 pub const clockid_t = system.clockid_t;
+pub const cmsghdr = system.cmsghdr;
 pub const timerfd_clockid_t = system.timerfd_clockid_t;
 pub const cpu_set_t = system.cpu_set_t;
 pub const dev_t = system.dev_t;
