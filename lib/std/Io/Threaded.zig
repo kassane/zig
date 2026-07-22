@@ -13240,7 +13240,7 @@ fn netReceivePosix(
         .iovlen = 1,
         .control = message.control.ptr,
         .controllen = @intCast(message.control.len),
-        .flags = undefined,
+        .flags = 0,
     };
 
     const syscall = try Syscall.start();
