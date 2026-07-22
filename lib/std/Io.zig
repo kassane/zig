@@ -431,6 +431,7 @@ pub const Operation = union(enum) {
     pub const NetRead = struct {
         socket_handle: net.Socket.Handle,
         data: [][]u8,
+        control: []u8 = &.{},
 
         pub const Error = error{
             SystemResources,
@@ -444,7 +445,7 @@ pub const Operation = union(enum) {
             ConnectionTimedOut,
         } || Io.UnexpectedError;
 
-        pub const Result = Error!usize;
+        pub const Result = Error!net.Stream.ReadResult;
     };
 
     pub const NetWrite = struct {

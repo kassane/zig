@@ -1334,12 +1334,36 @@ pub const Stream = struct {
 
     const max_iovecs_len = 8;
 
+    pub const ReadResult = struct {
+        data_len: usize,
+        control_len: usize = 0,
+        /// Whether only some of the control data was received.
+        ///
+        /// When control data is truncated, the extra data essentially
+        /// disappears into the ether. This is indicative of a design problem,
+        /// such as the control buffer being too small.
+        control_truncated: bool = false,
+    };
+
     /// This is a low-level API that calls the `Io` interface function directly.
     /// For a higher level API, see `reader`.
     pub fn read(s: *const Stream, io: Io, data: [][]u8) Reader.Error!usize {
-        return (try io.operate(.{ .net_read = .{
+        const rc, _ = try (try io.operate(.{ .net_read = .{
             .socket_handle = s.socket.handle,
             .data = data,
+        } })).net_read;
+        return rc;
+    }
+
+    /// Read with control data.
+    ///
+    /// This is a low-level API that calls the `Io` interface function directly.
+    /// For a higher level API, see `reader`.
+    pub fn readWithControl(s: *const Stream, io: Io, data: [][]u8, control: []u8) Reader.Error!ReadResult {
+        return try (try io.operate(.{ .net_read = .{
+            .socket_handle = s.socket.handle,
+            .data = data,
+            .control = control,
         } })).net_read;
     }
 
@@ -1354,12 +1378,20 @@ pub const Stream = struct {
     pub const Reader = struct {
         io: Io,
         interface: Io.Reader,
+        control_buffer: []u8,
+        control_len: usize,
+        control_truncated: bool,
         stream: Stream,
         err: ?Error,
 
         pub const Error = Io.Operation.NetRead.Error || Io.Cancelable;
 
         pub fn init(stream: Stream, io: Io, buffer: []u8) Reader {
+            return initWithControl(stream, io, buffer, &.{});
+        }
+
+        /// Same as `init`, but also provides a buffer for storing control data.
+        pub fn initWithControl(stream: Stream, io: Io, buffer: []u8, control_buffer: []u8) Reader {
             return .{
                 .io = io,
                 .interface = .{
@@ -1371,6 +1403,9 @@ pub const Stream = struct {
                     .seek = 0,
                     .end = 0,
                 },
+                .control_buffer = control_buffer,
+                .control_len = 0,
+                .control_truncated = false,
                 .stream = stream,
                 .err = null,
             };
@@ -1391,18 +1426,31 @@ pub const Stream = struct {
             const dest_n, const data_size = try io_r.writableVector(&iovecs_buffer, data);
             const dest = iovecs_buffer[0..dest_n];
             assert(dest[0].len > 0);
-            const n = r.stream.read(io, dest) catch |err| {
+            const result = r.stream.readWithControl(io, dest, r.control_buffer[r.control_len..]) catch |err| {
                 r.err = err;
                 return error.ReadFailed;
             };
-            if (n == 0) {
+            r.control_len += result.control_len;
+            r.control_truncated = r.control_truncated or result.control_truncated;
+            if (result.data_len == 0) {
                 return error.EndOfStream;
             }
-            if (n > data_size) {
-                r.interface.end += n - data_size;
+            if (result.data_len > data_size) {
+                r.interface.end += result.data_len - data_size;
                 return data_size;
             }
-            return n;
+            return result.data_len;
+        }
+
+        /// Get buffered control data.
+        pub fn controlSlice(r: *const Reader) []u8 {
+            return r.control_buffer[0..r.control_len];
+        }
+
+        /// Clear buffered control data.
+        pub fn clearControl(r: *Reader) void {
+            r.control_len = 0;
+            r.control_truncated = false;
         }
     };
 
@@ -1487,6 +1535,11 @@ pub const Stream = struct {
 
     pub fn reader(stream: Stream, io: Io, buffer: []u8) Reader {
         return .init(stream, io, buffer);
+    }
+
+    /// Same as `reader`, but also provides a buffer for storing control data.
+    pub fn readerWithControl(stream: Stream, io: Io, buffer: []u8, control_buffer: []u8) Reader {
+        return .initWithControl(stream, io, buffer, control_buffer);
     }
 
     pub fn writer(stream: Stream, io: Io, buffer: []u8) Writer {
