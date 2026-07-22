@@ -1457,6 +1457,8 @@ pub const Stream = struct {
     pub const Writer = struct {
         io: Io,
         interface: Io.Writer,
+        /// Will be sent on next drain, then set back to an empty slice.
+        control: []const u8 = &.{},
         stream: Stream,
         err: ?Error = null,
         write_file_err: ?WriteFileError = null,
@@ -1499,6 +1501,7 @@ pub const Stream = struct {
                 .header = buffered,
                 .data = data,
                 .splat = splat,
+                .control = w.control,
             } }) catch |err| {
                 w.err = err;
                 return error.WriteFailed;
@@ -1507,6 +1510,7 @@ pub const Stream = struct {
                 w.err = err;
                 return error.WriteFailed;
             };
+            w.control = &.{};
             return io_w.consume(n);
         }
 

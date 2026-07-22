@@ -2590,9 +2590,9 @@ fn operate(userdata: ?*anyopaque, operation: Io.Operation) Io.Cancelable!Io.Oper
         },
         .net_write => |o| return .{
             .net_write = (if (is_windows)
-                netWriteWindows(o.socket_handle, o.header, o.data, o.splat)
+                netWriteWindows(o.socket_handle, o.header, o.data, o.splat, o.control)
             else
-                netWritePosix(o.socket_handle, o.header, o.data, o.splat)) catch |err| switch (err) {
+                netWritePosix(o.socket_handle, o.header, o.data, o.splat, o.control)) catch |err| switch (err) {
                 error.Canceled => |e| return e,
                 else => |e| e,
             },
@@ -3306,7 +3306,7 @@ fn batchDrainSubmittedWindows(t: *Threaded, b: *Io.Batch, concurrency: bool) (Io
                 // TODO integrate with overlapped I/O or equivalent to avoid this error
                 if (concurrency) return error.ConcurrencyUnavailable;
                 batchCompleteBlockingWindows(b, operation_userdata, .{
-                    .net_write = netWriteWindows(o.socket_handle, o.header, o.data, o.splat) catch |err| switch (err) {
+                    .net_write = netWriteWindows(o.socket_handle, o.header, o.data, o.splat, o.control) catch |err| switch (err) {
                         error.Canceled => |e| return e,
                         else => |e| e,
                     },
@@ -13389,6 +13389,7 @@ fn netWritePosix(
     header: []const u8,
     data: []const []const u8,
     splat: usize,
+    control: []const u8,
 ) net.Stream.Writer.Error!usize {
     if (!have_networking) return error.NetworkDown;
 
@@ -13398,8 +13399,8 @@ fn netWritePosix(
         .namelen = 0,
         .iov = &iovecs,
         .iovlen = 0,
-        .control = null,
-        .controllen = 0,
+        .control = if (control.len == 0) null else @constCast(control.ptr),
+        .controllen = @intCast(control.len),
         .flags = 0,
     };
     addBuf(&iovecs, &msg.iovlen, header);
@@ -13481,8 +13482,12 @@ fn netWriteWindows(
     header: []const u8,
     data: []const []const u8,
     splat: usize,
+    control: []const u8,
 ) net.Stream.Writer.Error!usize {
     if (!have_networking) return error.NetworkDown;
+
+    // Windows doesn't have the concept of control/ancillary data.
+    _ = control;
 
     var iovecs: [max_iovecs_len]windows.AFD.WSABUF(.@"const") = undefined;
     var len: u32 = 0;

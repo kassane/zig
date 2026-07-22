@@ -453,6 +453,7 @@ pub const Operation = union(enum) {
         header: []const u8 = &.{},
         data: []const []const u8,
         splat: usize = 1,
+        control: []const u8 = &.{},
 
         pub const Error = error{
             /// Another TCP Fast Open is already in progress.
