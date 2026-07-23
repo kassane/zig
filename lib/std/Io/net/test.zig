@@ -295,6 +295,120 @@ test "listen on a unix socket, send bytes, receive bytes" {
     try client_task.await(io);
 }
 
+test "listen on a unix socket, pass file descriptor" {
+    if (builtin.os.tag == .windows or builtin.os.tag == .wasi) {
+        // Windows and WASI don't have the concept of control/ancillary data.
+        return error.SkipZigTest;
+    }
+
+    const io = testing.io;
+    const gpa = testing.allocator;
+
+    const socket_path = try generateFileName(gpa, io, "socket.unix");
+    defer gpa.free(socket_path);
+    const temp_file_path = try generateFileName(gpa, io, "temp_file");
+    defer gpa.free(temp_file_path);
+
+    defer Io.Dir.cwd().deleteFile(io, socket_path) catch {};
+    defer Io.Dir.cwd().deleteFile(io, temp_file_path) catch {};
+
+    const socket_addr = try net.UnixAddress.init(socket_path);
+
+    var server = socket_addr.listen(io, .{}) catch |err| switch (err) {
+        error.AddressFamilyUnsupported => return error.SkipZigTest,
+        error.NetworkDown => return error.SkipZigTest,
+        else => |e| return e,
+    };
+    defer server.socket.close(io);
+
+    const cmsg_alignment = switch (builtin.os.tag) {
+        .driverkit,
+        .ios,
+        .maccatalyst,
+        .macos,
+        .tvos,
+        .visionos,
+        .watchos,
+        => 4,
+        else => @sizeOf(usize),
+    };
+
+    const cmsghdr_aligned_len = comptime mem.alignForward(usize, @sizeOf(std.posix.cmsghdr), cmsg_alignment);
+    const cmsghdr_align = @alignOf(std.posix.cmsghdr);
+    const fd_t_len = @sizeOf(std.posix.fd_t);
+
+    const cmsg_buf_len =
+        cmsghdr_aligned_len +
+        comptime mem.alignForward(usize, fd_t_len, cmsg_alignment);
+
+    const S = struct {
+        fn clientFn(path: []const u8, file_path: []const u8) !void {
+            const temp_file = try Io.Dir.cwd().createFile(io, file_path, .{});
+            defer temp_file.close(io);
+
+            const server_path: net.UnixAddress = try .init(path);
+            var stream = try server_path.connect(io);
+            defer stream.close(io);
+
+            var cmsg_buf: [cmsg_buf_len]u8 align(cmsghdr_align) = @splat(0);
+
+            const header_ptr: *std.posix.cmsghdr = @ptrCast(&cmsg_buf);
+            header_ptr.* = .{
+                .len = @intCast(cmsghdr_aligned_len + fd_t_len),
+                .level = std.posix.SOL.SOCKET,
+                .type = std.posix.SCM.RIGHTS,
+            };
+
+            const fds = mem.bytesAsSlice(std.posix.fd_t, cmsg_buf[cmsghdr_aligned_len..]);
+            fds[0] = temp_file.handle;
+
+            var stream_writer = stream.writer(io, &.{});
+            stream_writer.control = &cmsg_buf;
+            try stream_writer.interface.writeAll("Hello world!");
+        }
+    };
+
+    var client_task = io.concurrent(S.clientFn, .{ socket_path, temp_file_path }) catch |err| switch (err) {
+        error.ConcurrencyUnavailable => return error.SkipZigTest,
+    };
+    defer client_task.cancel(io) catch {};
+
+    var stream = try server.accept(io);
+    defer stream.close(io);
+
+    var control_buf: [32]u8 align(cmsghdr_align) = undefined;
+    var buf: [16]u8 = undefined;
+    var stream_reader = stream.readerWithControl(io, &.{}, &control_buf);
+
+    const n = try stream_reader.interface.readSliceShort(&buf);
+    const cmsg_buf = stream_reader.controlSlice();
+
+    try testing.expect(!stream_reader.control_truncated); // The control buffer should be big enough to receive the entire control message
+
+    try testing.expectEqual(12, n);
+    try testing.expectEqualStrings("Hello world!", buf[0..n]);
+
+    try testing.expect(cmsg_buf.len >= cmsghdr_aligned_len + fd_t_len);
+
+    const header_ptr: *const std.posix.cmsghdr = @ptrCast(@alignCast(cmsg_buf));
+
+    try testing.expectEqual(cmsghdr_aligned_len + fd_t_len, header_ptr.len);
+    try testing.expectEqual(std.posix.SOL.SOCKET, header_ptr.level);
+    try testing.expectEqual(std.posix.SCM.RIGHTS, header_ptr.type);
+
+    const fds = mem.bytesAsSlice(std.posix.fd_t, cmsg_buf[cmsghdr_aligned_len..]);
+
+    const temp_file: Io.File = .{
+        .handle = fds[0],
+        .flags = .{ .nonblocking = false },
+    };
+    defer temp_file.close(io);
+    var temp_file_writer = temp_file.writer(io, &.{});
+    try temp_file_writer.interface.writeAll("if this is a real file descriptor, this shouldn't fail");
+
+    try client_task.await(io);
+}
+
 fn generateFileName(gpa: Allocator, io: Io, base_name: []const u8) ![]const u8 {
     const random_bytes_count = 12;
     const sub_path_len = comptime std.base64.url_safe.Encoder.calcSize(random_bytes_count);
