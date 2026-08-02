@@ -299,7 +299,7 @@ pub fn preferNewLinkerOverLld(target: *const std.Target) bool {
 /// Returns `true` if `ofmt` has two linker implementations, so `-fnew-linker` is meaningful.
 pub fn hasNewLinker(ofmt: std.Target.ObjectFormat) bool {
     return switch (ofmt) {
-        .elf => true,
+        .elf, .macho => true,
         else => false,
     };
 }

@@ -587,7 +587,7 @@ pub const File = struct {
     pub fn startProgress(base: *File, prog_node: std.Progress.Node) void {
         switch (base.tag) {
             else => {},
-            inline .elf2, .coff => |tag| {
+            inline .elf2, .coff, .macho2 => |tag| {
                 dev.check(tag.devFeature());
                 return @as(*tag.Type(), @fieldParentPtr("base", base)).startProgress(prog_node);
             },
@@ -597,7 +597,7 @@ pub const File = struct {
     pub fn endProgress(base: *File) void {
         switch (base.tag) {
             else => {},
-            inline .elf2, .coff => |tag| {
+            inline .elf2, .coff, .macho2 => |tag| {
                 dev.check(tag.devFeature());
                 return @as(*tag.Type(), @fieldParentPtr("base", base)).endProgress();
             },
@@ -651,11 +651,13 @@ pub const File = struct {
                 }
                 base.file = try emit.root_dir.handle.openFile(io, emit.sub_path, .{ .mode = .read_write });
             },
-            .elf2, .coff => if (base.file == null) {
+            .elf2, .coff, .macho2 => if (base.file == null) {
                 const mf = if (base.cast(.elf2)) |elf|
                     &elf.mf
                 else if (base.cast(.coff)) |coff|
                     &coff.mf
+                else if (base.cast(.macho2)) |macho|
+                    &macho.mf
                 else
                     unreachable;
                 mf.memory_map.file = try base.emit.root_dir.handle.openFile(io, base.emit.sub_path, .{
@@ -740,11 +742,13 @@ pub const File = struct {
                     }
                 }
             },
-            .elf2, .coff => if (base.file) |f| {
+            .elf2, .coff, .macho2 => if (base.file) |f| {
                 const mf = if (base.cast(.elf2)) |elf|
                     &elf.mf
                 else if (base.cast(.coff)) |coff|
                     &coff.mf
+                else if (base.cast(.macho2)) |macho|
+                    &macho.mf
                 else
                     unreachable;
                 mf.unmap();
@@ -900,6 +904,7 @@ pub const File = struct {
             .plan9 => unreachable,
             .spirv => {},
             .coff => {},
+            .macho2 => {},
             inline else => |tag| {
                 dev.check(tag.devFeature());
                 return @as(*tag.Type(), @fieldParentPtr("base", base)).updateLineNumber(pt, ti_id, line);
@@ -951,7 +956,7 @@ pub const File = struct {
     pub fn idle(base: *File, tid: Zcu.PerThread.Id) Error!bool {
         switch (base.tag) {
             else => return false,
-            inline .elf2, .coff => |tag| {
+            inline .elf2, .coff, .macho2 => |tag| {
                 dev.check(tag.devFeature());
                 return @as(*tag.Type(), @fieldParentPtr("base", base)).idle(tid);
             },
@@ -961,7 +966,7 @@ pub const File = struct {
     pub fn updateErrorData(base: *File, pt: Zcu.PerThread) Error!void {
         switch (base.tag) {
             else => {},
-            inline .elf2, .coff => |tag| {
+            inline .elf2, .coff, .macho2 => |tag| {
                 dev.check(tag.devFeature());
                 return @as(*tag.Type(), @fieldParentPtr("base", base)).updateErrorData(pt);
             },
@@ -1234,7 +1239,7 @@ pub const File = struct {
         assert(!base.post_prelink);
 
         switch (base.tag) {
-            inline .coff, .elf, .elf2, .wasm, .spirv => |tag| {
+            inline .coff, .elf, .elf2, .macho2, .wasm, .spirv => |tag| {
                 dev.check(tag.devFeature());
                 return @as(*tag.Type(), @fieldParentPtr("base", base)).loadInput(input);
             },
@@ -1253,7 +1258,7 @@ pub const File = struct {
         }
 
         switch (base.tag) {
-            inline .elf2, .coff, .wasm, .c => |tag| {
+            inline .elf2, .coff, .macho2, .wasm, .c => |tag| {
                 dev.check(tag.devFeature());
                 try @as(*tag.Type(), @fieldParentPtr("base", base)).prelink(base.comp.link_prog_node);
             },
@@ -1298,6 +1303,7 @@ pub const File = struct {
         elf,
         elf2,
         macho,
+        macho2,
         c,
         wasm,
         spirv,
@@ -1311,6 +1317,7 @@ pub const File = struct {
                 .elf => Elf,
                 .elf2 => Elf2,
                 .macho => MachO,
+                .macho2 => MachO2,
                 .c => C,
                 .wasm => Wasm,
                 .spirv => Spirv,
@@ -1324,7 +1331,7 @@ pub const File = struct {
             return switch (ofmt) {
                 .coff => .coff,
                 .elf => if (use_new_linker) .elf2 else .elf,
-                .macho => .macho,
+                .macho => if (use_new_linker) .macho2 else .macho,
                 .wasm => .wasm,
                 .plan9 => .plan9,
                 .c => .c,
@@ -1417,6 +1424,7 @@ pub const File = struct {
     pub const Elf = @import("link/Elf.zig");
     pub const Elf2 = @import("link/Elf2.zig");
     pub const MachO = @import("link/MachO.zig");
+    pub const MachO2 = @import("link/MachO2.zig");
     pub const Spirv = @import("link/Spirv.zig");
     pub const Wasm = @import("link/Wasm.zig");
     pub const Dwarf = @import("link/Dwarf.zig");
