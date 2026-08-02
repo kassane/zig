@@ -463,21 +463,21 @@ pub fn deinit(self: *Elf) void {
     self.dump_argv_list.deinit(gpa);
 }
 
-pub fn getNavVAddr(self: *Elf, pt: Zcu.PerThread, nav_index: InternPool.Nav.Index, reloc_info: link.File.RelocInfo) !u64 {
-    return self.zigObjectPtr().?.getNavVAddr(self, pt, nav_index, reloc_info);
+pub fn navSymbol(self: *Elf, nav: InternPool.Nav.Index) link.Error!link.File.SymbolId {
+    return self.zigObjectPtr().?.navSymbol(self, nav);
 }
 
-pub fn lowerUav(
+pub fn relocSymAddr(self: *Elf, reloc_info: link.File.RelocInfo) !void {
+    return self.zigObjectPtr().?.relocSymAddr(self, reloc_info);
+}
+
+pub fn uavSymbol(
     self: *Elf,
     pt: Zcu.PerThread,
     uav: InternPool.Index,
     explicit_alignment: InternPool.Alignment,
 ) !link.File.SymbolId {
-    return self.zigObjectPtr().?.lowerUav(self, pt, uav, explicit_alignment);
-}
-
-pub fn getUavVAddr(self: *Elf, uav: InternPool.Index, reloc_info: link.File.RelocInfo) !u64 {
-    return self.zigObjectPtr().?.getUavVAddr(self, uav, reloc_info);
+    return self.zigObjectPtr().?.uavSymbol(self, pt, uav, explicit_alignment);
 }
 
 /// Returns end pos of collision, if any.

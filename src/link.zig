@@ -1039,6 +1039,7 @@ pub const File = struct {
     pub const RelocInfo = struct {
         parent: Parent,
         offset: u64,
+        target: SymbolId,
         addend: u32,
 
         pub const Parent = union(enum) {
@@ -1048,16 +1049,9 @@ pub const File = struct {
         };
     };
 
-    /// Get allocated `Nav`'s address in virtual memory.
-    /// The linker is passed information about the containing atom, `parent_atom_index`, and offset within it's
-    /// memory buffer, `offset`, so that it can make a note of potential relocation sites, should the
-    /// `Nav`'s address was not yet resolved, or the containing atom gets moved in virtual memory.
-    /// May be called before or after updateFunc/updateNav therefore it is up to the linker to allocate
-    /// the block/atom.
     /// Never called when LLVM is codegenning the ZCU.
-    pub fn getNavVAddr(base: *File, pt: Zcu.PerThread, nav_index: InternPool.Nav.Index, reloc_info: RelocInfo) Error!u64 {
-        assert(pt.zcu.llvm_object == null);
-
+    pub fn relocSymAddr(base: *File, reloc_info: RelocInfo) Error!void {
+        assert(base.comp.zcu.?.llvm_object == null);
         switch (base.tag) {
             .lld => unreachable,
             .c => unreachable,
@@ -1067,20 +1061,19 @@ pub const File = struct {
             .spork8 => unreachable,
             inline else => |tag| {
                 dev.check(tag.devFeature());
-                return @as(*tag.Type(), @fieldParentPtr("base", base)).getNavVAddr(pt, nav_index, reloc_info);
+                return @as(*tag.Type(), @fieldParentPtr("base", base)).relocSymAddr(reloc_info);
             },
         }
     }
 
     /// Never called when LLVM is codegenning the ZCU.
-    pub fn lowerUav(
+    pub fn uavSymbol(
         base: *File,
         pt: Zcu.PerThread,
-        decl_val: InternPool.Index,
-        decl_align: InternPool.Alignment,
+        uav_val: InternPool.Index,
+        uav_align: InternPool.Alignment,
     ) Error!SymbolId {
         assert(pt.zcu.llvm_object == null);
-
         switch (base.tag) {
             .lld => unreachable,
             .c => unreachable,
@@ -1090,15 +1083,14 @@ pub const File = struct {
             .spork8 => unreachable,
             inline else => |tag| {
                 dev.check(tag.devFeature());
-                return @as(*tag.Type(), @fieldParentPtr("base", base)).lowerUav(pt, decl_val, decl_align);
+                return @as(*tag.Type(), @fieldParentPtr("base", base)).uavSymbol(pt, uav_val, uav_align);
             },
         }
     }
 
     /// Never called when LLVM is codegenning the ZCU.
-    pub fn getUavVAddr(base: *File, decl_val: InternPool.Index, reloc_info: RelocInfo) Error!u64 {
+    pub fn navSymbol(base: *File, nav: InternPool.Nav.Index) Error!SymbolId {
         assert(base.comp.zcu.?.llvm_object == null);
-
         switch (base.tag) {
             .lld => unreachable,
             .c => unreachable,
@@ -1108,7 +1100,7 @@ pub const File = struct {
             .spork8 => unreachable,
             inline else => |tag| {
                 dev.check(tag.devFeature());
-                return @as(*tag.Type(), @fieldParentPtr("base", base)).getUavVAddr(decl_val, reloc_info);
+                return @as(*tag.Type(), @fieldParentPtr("base", base)).navSymbol(nav);
             },
         }
     }

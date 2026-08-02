@@ -3124,21 +3124,21 @@ pub fn freeNav(self: *MachO, nav: InternPool.Nav.Index) void {
     return self.getZigObject().?.freeNav(nav);
 }
 
-pub fn getNavVAddr(self: *MachO, pt: Zcu.PerThread, nav_index: InternPool.Nav.Index, reloc_info: link.File.RelocInfo) !u64 {
-    return self.getZigObject().?.getNavVAddr(self, pt, nav_index, reloc_info);
+pub fn navSymbol(self: *MachO, nav: InternPool.Nav.Index) link.Error!link.File.SymbolId {
+    return self.getZigObject().?.navSymbol(self, nav);
 }
 
-pub fn lowerUav(
+pub fn relocSymAddr(self: *MachO, reloc_info: link.File.RelocInfo) link.Error!void {
+    return self.getZigObject().?.relocSymAddr(self, reloc_info);
+}
+
+pub fn uavSymbol(
     self: *MachO,
     pt: Zcu.PerThread,
     uav: InternPool.Index,
     explicit_alignment: InternPool.Alignment,
 ) !link.File.SymbolId {
-    return self.getZigObject().?.lowerUav(self, pt, uav, explicit_alignment);
-}
-
-pub fn getUavVAddr(self: *MachO, uav: InternPool.Index, reloc_info: link.File.RelocInfo) !u64 {
-    return self.getZigObject().?.getUavVAddr(self, uav, reloc_info);
+    return self.getZigObject().?.uavSymbol(self, pt, uav, explicit_alignment);
 }
 
 pub fn getGlobalSymbol(self: *MachO, name: []const u8, lib_name: ?[]const u8) !u32 {

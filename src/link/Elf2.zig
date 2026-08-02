@@ -4324,36 +4324,7 @@ pub fn navSymbol(elf: *Elf, nav_index: InternPool.Nav.Index) link.Error!link.Fil
     const s: Symbol.Id = .local(nmi.symbol(elf));
     return s.toTypeErased();
 }
-pub fn uavSymbol(
-    elf: *Elf,
-    uav_val: InternPool.Index,
-    uav_align: InternPool.Alignment,
-) link.Error!link.File.SymbolId {
-    const diags = &elf.base.comp.link_diags;
-    const umi = elf.uavMapIndex(uav_val, uav_align) catch |err| switch (err) {
-        else => |e| return e,
-        error.MappedFileIo => return diags.fail("failed to write output file: {t}", .{elf.mf.io_err.?}),
-    };
-    const s: Symbol.Id = .local(umi.symbol(elf));
-    return s.toTypeErased();
-}
-pub fn getNavVAddr(
-    elf: *Elf,
-    pt: Zcu.PerThread,
-    nav: InternPool.Nav.Index,
-    reloc_info: link.File.RelocInfo,
-) link.Error!u64 {
-    _ = pt;
-    return elf.getVAddr(reloc_info, try elf.navSymbol(nav));
-}
-pub fn getUavVAddr(
-    elf: *Elf,
-    uav_val: InternPool.Index,
-    reloc_info: link.File.RelocInfo,
-) link.Error!u64 {
-    return elf.getVAddr(reloc_info, try elf.uavSymbol(uav_val, .none));
-}
-pub fn getVAddr(elf: *Elf, reloc_info: link.File.RelocInfo, target: link.File.SymbolId) link.Error!u64 {
+pub fn relocSymAddr(elf: *Elf, reloc_info: link.File.RelocInfo) link.Error!void {
     try elf.addReloc(
         switch (reloc_info.parent) {
             .none => unreachable,
@@ -4361,13 +4332,12 @@ pub fn getVAddr(elf: *Elf, reloc_info: link.File.RelocInfo, target: link.File.Sy
             .debug_output => |debug_output| Node.toAtom(debug_output.dwarf2.info_writer.ni),
         },
         reloc_info.offset,
-        target,
+        reloc_info.target,
         reloc_info.addend,
         .absAddr(elf),
     );
-    return Symbol.Id.fromTypeErased(target).value(elf);
 }
-pub fn lowerUav(
+pub fn uavSymbol(
     elf: *Elf,
     pt: Zcu.PerThread,
     uav_val: InternPool.Index,

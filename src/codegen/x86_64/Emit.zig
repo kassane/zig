@@ -100,11 +100,7 @@ pub fn emitMir(emit: *Emit) Error!void {
                     .inst => |inst| .{ .inst = inst },
                     .table => .table,
                     .nav => |nav| {
-                        const symbol_id = try codegen.genNavRef(
-                            emit.bin_file,
-                            emit.pt,
-                            nav,
-                        );
+                        const symbol_id = try emit.bin_file.navSymbol(nav);
                         const target_symbol: RelocInfo.Target.Symbol = if (ip.getNav(nav).getExtern(ip)) |@"extern"| .{
                             .symbol = symbol_id,
                             .is_extern = switch (@"extern".visibility) {
@@ -124,7 +120,7 @@ pub fn emitMir(emit: *Emit) Error!void {
                         }
                     },
                     .uav => |uav| .{ .symbol = .{
-                        .symbol = try emit.bin_file.lowerUav(
+                        .symbol = try emit.bin_file.uavSymbol(
                             emit.pt,
                             uav.val,
                             Type.fromInterned(uav.orig_ty).ptrAlignment(emit.pt.zcu),
@@ -597,12 +593,12 @@ pub fn emitMir(emit: *Emit) Error!void {
                                             .nav => |nav| @unionInit(
                                                 DwarfLoc,
                                                 addr_loc,
-                                                try codegen.genNavRef(emit.bin_file, emit.pt, nav),
+                                                try emit.bin_file.navSymbol(nav),
                                             ),
                                             .uav => |uav| @unionInit(
                                                 DwarfLoc,
                                                 addr_loc,
-                                                try emit.bin_file.lowerUav(
+                                                try emit.bin_file.uavSymbol(
                                                     emit.pt,
                                                     uav.val,
                                                     Type.fromInterned(uav.orig_ty)
