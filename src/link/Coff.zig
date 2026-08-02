@@ -1607,7 +1607,7 @@ fn create(
     errdefer file.close(io);
     coff.* = .{
         .base = .{
-            .tag = .coff2,
+            .tag = .coff,
 
             .comp = comp,
             .emit = path,

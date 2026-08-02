@@ -142,7 +142,7 @@ pub fn emitMir(emit: *Emit) Error!void {
                         else if (emit.bin_file.cast(.macho)) |macho_file|
                             @fromBackingInt(@intCast(macho_file.getZigObject().?.getOrCreateMetadataForLazySymbol(macho_file, emit.pt, lazy_sym) catch |err|
                                 return emit.fail("{s} creating lazy symbol", .{@errorName(err)})))
-                        else if (emit.bin_file.cast(.coff2)) |coff|
+                        else if (emit.bin_file.cast(.coff)) |coff|
                             @fromBackingInt(@intCast(@backingInt(try coff.lazySymbol(lazy_sym))))
                         else
                             return emit.fail("lazy symbols unimplemented for {s}", .{@tagName(emit.bin_file.tag)}),
@@ -157,7 +157,7 @@ pub fn emitMir(emit: *Emit) Error!void {
                             .type = .FUNC,
                         }) else if (emit.bin_file.cast(.macho)) |macho_file|
                             @fromBackingInt(@intCast(try macho_file.getGlobalSymbol(extern_func.toSlice(&emit.lower.mir).?, null)))
-                        else if (emit.bin_file.cast(.coff2)) |coff| @fromBackingInt(@intCast(@backingInt(try coff.globalSymbol(.{
+                        else if (emit.bin_file.cast(.coff)) |coff| @fromBackingInt(@intCast(@backingInt(try coff.globalSymbol(.{
                             .name = extern_func.toSlice(&emit.lower.mir).?,
                         })))) else return emit.fail("external symbol unimplemented for {s}", .{@tagName(emit.bin_file.tag)}),
                         .is_extern = true,
@@ -171,7 +171,7 @@ pub fn emitMir(emit: *Emit) Error!void {
                     switch (lowered_inst.encoding.mnemonic) {
                         .call => {
                             reloc.target = .{ .branch = target };
-                            if (target.is_dll_import and emit.bin_file.cast(.coff2) != null) {
+                            if (target.is_dll_import and emit.bin_file.cast(.coff) != null) {
                                 try emit.encodeInst(try .new(.none, .call, &.{
                                     .{ .mem = .initRip(.ptr, 0) },
                                 }, emit.lower.target), reloc_info);
@@ -252,7 +252,7 @@ pub fn emitMir(emit: *Emit) Error!void {
                             }, emit.lower.target), reloc_info),
                             else => unreachable,
                         }
-                    } else if (emit.bin_file.cast(.coff2)) |_| {
+                    } else if (emit.bin_file.cast(.coff)) |_| {
                         if (target.is_dll_import) switch (lowered_inst.encoding.mnemonic) {
                             .lea => try emit.encodeInst(try .new(.none, .mov, &.{
                                 lowered_inst.ops[0],
@@ -372,7 +372,7 @@ pub fn emitMir(emit: *Emit) Error!void {
                             }, emit.lower.target), &.{});
                         },
                         else => unreachable,
-                    } else if (emit.bin_file.cast(.coff2)) |coff| {
+                    } else if (emit.bin_file.cast(.coff)) |coff| {
                         switch (emit.lower.target.cpu.arch) {
                             else => unreachable,
                             .x86 => {
@@ -845,7 +845,7 @@ fn encodeInst(emit: *Emit, lowered_inst: Instruction, reloc_info: []const RelocI
                 if (target.is_extern and !target.force_pcrel_direct) break :rt .GOTPCREL;
                 break :rt .PC32;
             } },
-        ) else if (emit.bin_file.cast(.coff2)) |coff| try coff.addReloc(
+        ) else if (emit.bin_file.cast(.coff)) |coff| try coff.addReloc(
             @fromBackingInt(@intCast(@backingInt(emit.atom_id))),
             end_offset - 4,
             @fromBackingInt(@intCast(@backingInt(target.symbol))),
@@ -883,7 +883,7 @@ fn encodeInst(emit: *Emit, lowered_inst: Instruction, reloc_info: []const RelocI
                     .symbolnum = @intCast(@backingInt(target.symbol)),
                 },
             });
-        } else if (emit.bin_file.cast(.coff2)) |coff| try coff.addReloc(
+        } else if (emit.bin_file.cast(.coff)) |coff| try coff.addReloc(
             @fromBackingInt(@intCast(@backingInt(emit.atom_id))),
             end_offset - 4,
             @fromBackingInt(@intCast(@backingInt(target.symbol))),
@@ -941,7 +941,7 @@ fn encodeInst(emit: *Emit, lowered_inst: Instruction, reloc_info: []const RelocI
                     .symbolnum = @intCast(@backingInt(target.symbol)),
                 },
             });
-        } else if (emit.bin_file.cast(.coff2)) |coff| try coff.addReloc(
+        } else if (emit.bin_file.cast(.coff)) |coff| try coff.addReloc(
             @fromBackingInt(@intCast(@backingInt(emit.atom_id))),
             end_offset - 4,
             @fromBackingInt(@intCast(@backingInt(target.symbol))),

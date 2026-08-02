@@ -862,7 +862,7 @@ pub fn genNavRef(
             if (is_threadlocal) zo.symbols.items[sym_index].flags.tlv = true;
             return @fromBackingInt(@intCast(sym_index));
         }
-    } else if (lf.cast(.coff2)) |coff| {
+    } else if (lf.cast(.coff)) |coff| {
         return @fromBackingInt(@intCast(@backingInt(try coff.navSymbol(zcu, nav_index))));
     } else {
         std.debug.panic("TODO genNavRef for '{t}'", .{lf.tag});

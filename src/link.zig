@@ -587,7 +587,7 @@ pub const File = struct {
     pub fn startProgress(base: *File, prog_node: std.Progress.Node) void {
         switch (base.tag) {
             else => {},
-            inline .elf2, .coff2 => |tag| {
+            inline .elf2, .coff => |tag| {
                 dev.check(tag.devFeature());
                 return @as(*tag.Type(), @fieldParentPtr("base", base)).startProgress(prog_node);
             },
@@ -597,7 +597,7 @@ pub const File = struct {
     pub fn endProgress(base: *File) void {
         switch (base.tag) {
             else => {},
-            inline .elf2, .coff2 => |tag| {
+            inline .elf2, .coff => |tag| {
                 dev.check(tag.devFeature());
                 return @as(*tag.Type(), @fieldParentPtr("base", base)).endProgress();
             },
@@ -651,10 +651,10 @@ pub const File = struct {
                 }
                 base.file = try emit.root_dir.handle.openFile(io, emit.sub_path, .{ .mode = .read_write });
             },
-            .elf2, .coff2 => if (base.file == null) {
+            .elf2, .coff => if (base.file == null) {
                 const mf = if (base.cast(.elf2)) |elf|
                     &elf.mf
-                else if (base.cast(.coff2)) |coff|
+                else if (base.cast(.coff)) |coff|
                     &coff.mf
                 else
                     unreachable;
@@ -740,10 +740,10 @@ pub const File = struct {
                     }
                 }
             },
-            .elf2, .coff2 => if (base.file) |f| {
+            .elf2, .coff => if (base.file) |f| {
                 const mf = if (base.cast(.elf2)) |elf|
                     &elf.mf
-                else if (base.cast(.coff2)) |coff|
+                else if (base.cast(.coff)) |coff|
                     &coff.mf
                 else
                     unreachable;
@@ -841,7 +841,7 @@ pub const File = struct {
         switch (base.tag) {
             .lld => unreachable,
             else => {},
-            inline .elf, .elf2, .c, .coff2 => |tag| {
+            inline .elf, .elf2, .c, .coff => |tag| {
                 dev.check(tag.devFeature());
                 return @as(*tag.Type(), @fieldParentPtr("base", base)).updateContainerType(pt, ty, success);
             },
@@ -899,7 +899,7 @@ pub const File = struct {
             .lld => unreachable,
             .plan9 => unreachable,
             .spirv => {},
-            .coff2 => {},
+            .coff => {},
             inline else => |tag| {
                 dev.check(tag.devFeature());
                 return @as(*tag.Type(), @fieldParentPtr("base", base)).updateLineNumber(pt, ti_id, line);
@@ -951,7 +951,7 @@ pub const File = struct {
     pub fn idle(base: *File, tid: Zcu.PerThread.Id) Error!bool {
         switch (base.tag) {
             else => return false,
-            inline .elf2, .coff2 => |tag| {
+            inline .elf2, .coff => |tag| {
                 dev.check(tag.devFeature());
                 return @as(*tag.Type(), @fieldParentPtr("base", base)).idle(tid);
             },
@@ -961,7 +961,7 @@ pub const File = struct {
     pub fn updateErrorData(base: *File, pt: Zcu.PerThread) Error!void {
         switch (base.tag) {
             else => {},
-            inline .elf2, .coff2 => |tag| {
+            inline .elf2, .coff => |tag| {
                 dev.check(tag.devFeature());
                 return @as(*tag.Type(), @fieldParentPtr("base", base)).updateErrorData(pt);
             },
@@ -1242,7 +1242,7 @@ pub const File = struct {
         assert(!base.post_prelink);
 
         switch (base.tag) {
-            inline .coff2, .elf, .elf2, .wasm, .spirv => |tag| {
+            inline .coff, .elf, .elf2, .wasm, .spirv => |tag| {
                 dev.check(tag.devFeature());
                 return @as(*tag.Type(), @fieldParentPtr("base", base)).loadInput(input);
             },
@@ -1261,7 +1261,7 @@ pub const File = struct {
         }
 
         switch (base.tag) {
-            inline .elf2, .coff2, .wasm, .c => |tag| {
+            inline .elf2, .coff, .wasm, .c => |tag| {
                 dev.check(tag.devFeature());
                 try @as(*tag.Type(), @fieldParentPtr("base", base)).prelink(base.comp.link_prog_node);
             },
@@ -1302,7 +1302,7 @@ pub const File = struct {
     }
 
     pub const Tag = enum {
-        coff2,
+        coff,
         elf,
         elf2,
         macho,
@@ -1315,7 +1315,7 @@ pub const File = struct {
 
         pub fn Type(comptime tag: Tag) type {
             return switch (tag) {
-                .coff2 => Coff2,
+                .coff => Coff,
                 .elf => Elf,
                 .elf2 => Elf2,
                 .macho => MachO,
@@ -1330,7 +1330,7 @@ pub const File = struct {
 
         fn fromObjectFormat(ofmt: std.Target.ObjectFormat, use_new_linker: bool) Tag {
             return switch (ofmt) {
-                .coff => .coff2,
+                .coff => .coff,
                 .elf => if (use_new_linker) .elf2 else .elf,
                 .macho => .macho,
                 .wasm => .wasm,
@@ -1420,7 +1420,7 @@ pub const File = struct {
 
     pub const Lld = @import("link/Lld.zig");
     pub const C = @import("link/C.zig");
-    pub const Coff2 = @import("link/Coff.zig");
+    pub const Coff = @import("link/Coff.zig");
     pub const Spork8 = @import("link/Spork8.zig");
     pub const Elf = @import("link/Elf.zig");
     pub const Elf2 = @import("link/Elf2.zig");
