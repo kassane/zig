@@ -464,6 +464,7 @@ fn detectNativeFeatures(cpu: *Target.Cpu) void {
             setFeature(cpu, .nf, bit(leaf.edx, 21) and has_apx_save);
             setFeature(cpu, .cf, bit(leaf.edx, 21) and has_apx_save);
             setFeature(cpu, .zu, bit(leaf.edx, 21) and has_apx_save);
+            setFeature(cpu, .jmpabs, bit(leaf.edx, 21) and has_apx_save);
 
             break :has_avx10 bit(leaf.edx, 19);
         } else {
@@ -493,6 +494,7 @@ fn detectNativeFeatures(cpu: *Target.Cpu) void {
                 .nf,
                 .cf,
                 .zu,
+                .jmpabs,
             }) |feat| {
                 setFeature(cpu, feat, false);
             }
@@ -578,6 +580,7 @@ fn detectNativeFeatures(cpu: *Target.Cpu) void {
             .nf,
             .cf,
             .zu,
+            .jmpabs,
         }) |feat| {
             setFeature(cpu, feat, false);
         }
