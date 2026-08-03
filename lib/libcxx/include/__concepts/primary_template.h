@@ -6,20 +6,28 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef _LIBCPP___TYPE_TRAITS_DEPENDENT_TYPE_H
-#define _LIBCPP___TYPE_TRAITS_DEPENDENT_TYPE_H
+#ifndef _LIBCPP___TYPE_TRAITS_IS_PRIMARY_TEMPLATE_H
+#define _LIBCPP___TYPE_TRAITS_IS_PRIMARY_TEMPLATE_H
 
 #include <__config>
+#include <__type_traits/is_same.h>
 
 #if !defined(_LIBCPP_HAS_NO_PRAGMA_SYSTEM_HEADER)
 #  pragma GCC system_header
 #endif
 
+#if _LIBCPP_STD_VER >= 20
+
 _LIBCPP_BEGIN_NAMESPACE_STD
 
-template <class _Tp, bool>
-struct __dependent_type : public _Tp {};
+template <class _Tp>
+concept __primary_template = requires {
+  typename _Tp::__primary_template;
+  requires _IsSame<typename _Tp::__primary_template, _Tp>::value;
+};
 
 _LIBCPP_END_NAMESPACE_STD
 
-#endif // _LIBCPP___TYPE_TRAITS_DEPENDENT_TYPE_H
+#endif // _LIBCPP_STD_VER >= 20
+
+#endif // _LIBCPP___TYPE_TRAITS_IS_PRIMARY_TEMPLATE_H
