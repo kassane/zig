@@ -209,7 +209,10 @@ fn detectAmdProcessor(cpu: *const Target.Cpu, family: u32, model: u32) ?*const T
             0x10...0x1f, 0x60...0x6f, 0x70...0x7f, 0xa0...0xaf => &Target.x86.cpu.znver4,
             else => &Target.x86.cpu.znver3,
         },
-        26 => &Target.x86.cpu.znver5,
+        26 => switch (model) {
+            0x50...0x5f, 0x80...0xcf, 0xd8...0xe7 => &Target.x86.cpu.znver6,
+            else => &Target.x86.cpu.znver5,
+        },
         else => null,
     };
 }
