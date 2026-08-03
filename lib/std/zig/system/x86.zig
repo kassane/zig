@@ -74,6 +74,7 @@ pub fn detectNativeCpuAndFeatures(arch: Target.Cpu.Arch) Target.Cpu {
         if (switch (vendor) {
             0x756e6547 => detectIntelProcessor(&cpu, family, model, brand_id),
             0x68747541 => detectAmdProcessor(&cpu, family, model),
+            0x6f677948 => detectHygonProcessor(family, model),
             else => null,
         }) |m| b: {
             // Some hypervisors are evil liars and will operate in long mode while identifying as a
@@ -212,6 +213,19 @@ fn detectAmdProcessor(cpu: *const Target.Cpu, family: u32, model: u32) ?*const T
         26 => switch (model) {
             0x50...0x5f, 0x80...0xcf, 0xd8...0xe7 => &Target.x86.cpu.znver6,
             else => &Target.x86.cpu.znver5,
+        },
+        else => null,
+    };
+}
+
+fn detectHygonProcessor(family: u32, model: u32) ?*const Target.Cpu.Model {
+    return switch (family) {
+        24 => switch (model) {
+            4 => &Target.x86.cpu.c86_4g_m4,
+            6 => &Target.x86.cpu.c86_4g_m6,
+            7 => &Target.x86.cpu.c86_4g_m7,
+            8 => &Target.x86.cpu.c86_4g_m8,
+            else => null,
         },
         else => null,
     };
