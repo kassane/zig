@@ -373,7 +373,7 @@ ZIG_EXTERN_C bool ZigLLVMTargetMachineEmitToFile(LLVMTargetMachineRef targ_machi
     if (options->is_debug)
       opt_level = OptimizationLevel::O0;
     else if (options->is_small)
-      opt_level = OptimizationLevel::Oz;
+      opt_level = OptimizationLevel::O2;
     else
       opt_level = OptimizationLevel::O3;
 
