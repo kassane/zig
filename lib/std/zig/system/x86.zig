@@ -357,9 +357,11 @@ fn detectNativeFeatures(cpu: *Target.Cpu) void {
 
         // AMD uses a different bit for prefetchi.
         setFeature(cpu, .prefetchi, bit(leaf.eax, 20));
+        setFeature(cpu, .avx512bmm, bit(leaf.eax, 23) and has_avx512_save);
     } else {
         for ([_]Target.x86.Feature{
             .prefetchi,
+            .avx512bmm,
         }) |feat| {
             setFeature(cpu, feat, false);
         }
