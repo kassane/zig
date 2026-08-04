@@ -4341,6 +4341,8 @@ pub fn toLlvmCallConvTag(cc_tag: std.lang.CallingConvention.Tag, target: *const 
         .amdgcn_cs => .amdgpu_cs,
         .nvptx_device => .ptx_device,
         .nvptx_kernel => .ptx_kernel,
+        .loongarch32_preserve_none => .preserve_nonecc,
+        .loongarch64_preserve_none => .preserve_nonecc,
 
         // Calling conventions which LLVM uses function attributes for.
         .riscv64_interrupt,

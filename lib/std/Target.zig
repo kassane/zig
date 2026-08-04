@@ -1961,9 +1961,11 @@ pub const Cpu = struct {
                 => &.{.lanai},
 
                 .loongarch64_lp64,
+                .loongarch64_preserve_none,
                 => &.{.loongarch64},
 
                 .loongarch32_ilp32,
+                .loongarch32_preserve_none,
                 => &.{.loongarch32},
 
                 .m68k_sysv,
