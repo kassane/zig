@@ -2919,10 +2919,6 @@ fn addOneModuleTest(
     });
     these_tests.linkage = test_target.linkage;
     these_tests.use_new_linker = test_target.new_linker;
-    // https://codeberg.org/ziglang/zig/issues/31701
-    if (!(mem.eql(u8, options.name, "compiler-rt") or mem.eql(u8, options.name, "libc"))) {
-        if (options.no_builtin) these_tests.root_module.no_builtin = true;
-    }
     // https://codeberg.org/ziglang/zig/issues/31702
     if (mem.eql(u8, options.name, "compiler-rt") or mem.eql(u8, options.name, "libc")) {
         these_tests.root_module.stack_protector = false;
