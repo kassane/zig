@@ -2567,6 +2567,9 @@ pub const DynamicLinker = struct {
                 .aarch64_be,
                 => |arch| if (abi == .gnu) initFmt("/lib/ld-{s}.so.1", .{@tagName(arch)}) else none,
 
+                .riscv64,
+                => if (abi == .gnu) init("/lib/ld-riscv64-lp64.so.1") else none,
+
                 .x86 => if (abi == .gnu) init("/lib/ld.so.1") else none,
                 .x86_64 => initFmt("/lib/ld-{s}.so.1", .{switch (abi) {
                     .gnu => "x86-64",
