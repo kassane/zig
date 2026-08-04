@@ -2401,7 +2401,6 @@ pub fn supportsAddressSpace(
         .param => is_nvptx,
         .input, .output, .uniform, .push_constant, .storage_buffer => is_spirv,
         .physical_storage_buffer => arch == .spirv64,
-        .externref, .funcref => target.cpu.has(.wasm, .reference_types),
     };
 }
 

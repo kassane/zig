@@ -2840,7 +2840,6 @@ pub const AddrSpace = enum(u24) {
         pub const gs: AddrSpace = @fromBackingInt(256);
         pub const fs: AddrSpace = @fromBackingInt(257);
         pub const ss: AddrSpace = @fromBackingInt(258);
-
         pub const ptr32_sptr: AddrSpace = @fromBackingInt(270);
         pub const ptr32_uptr: AddrSpace = @fromBackingInt(271);
         pub const ptr64: AddrSpace = @fromBackingInt(272);
@@ -2858,17 +2857,19 @@ pub const AddrSpace = enum(u24) {
         pub const program5: AddrSpace = @fromBackingInt(6);
     };
 
-    // See llvm/lib/Target/NVPTX/NVPTX.h
+    // See llvm/include/llvm/Support/NVPTXAddrSpace.h
     pub const nvptx = struct {
         pub const generic: AddrSpace = @fromBackingInt(0);
         pub const global: AddrSpace = @fromBackingInt(1);
-        pub const constant: AddrSpace = @fromBackingInt(2);
         pub const shared: AddrSpace = @fromBackingInt(3);
-        pub const param: AddrSpace = @fromBackingInt(4);
+        pub const constant: AddrSpace = @fromBackingInt(4);
         pub const local: AddrSpace = @fromBackingInt(5);
+        pub const tensor: AddrSpace = @fromBackingInt(6);
+        pub const shared_cluster: AddrSpace = @fromBackingInt(7);
+        pub const entry_param: AddrSpace = @fromBackingInt(101);
     };
 
-    // See llvm/lib/Target/AMDGPU/AMDGPU.h
+    // See llvm/include/llvm/Support/AMDGPUAddrSpace.h
     pub const amdgpu = struct {
         pub const flat: AddrSpace = @fromBackingInt(0);
         pub const global: AddrSpace = @fromBackingInt(1);
@@ -2901,6 +2902,7 @@ pub const AddrSpace = enum(u24) {
         pub const streamout_register: AddrSpace = @fromBackingInt(128);
     };
 
+    // See llvm/lib/Target/SPIRV/SPIRVUtils.h
     pub const spirv = struct {
         pub const function: AddrSpace = @fromBackingInt(0);
         pub const cross_workgroup: AddrSpace = @fromBackingInt(1);
@@ -2910,14 +2912,30 @@ pub const AddrSpace = enum(u24) {
         pub const device_only_intel: AddrSpace = @fromBackingInt(5);
         pub const host_only_intel: AddrSpace = @fromBackingInt(6);
         pub const input: AddrSpace = @fromBackingInt(7);
+        pub const output: AddrSpace = @fromBackingInt(8);
+        pub const code_section_intel: AddrSpace = @fromBackingInt(9);
+        pub const private: AddrSpace = @fromBackingInt(10);
+        pub const storage_buffer: AddrSpace = @fromBackingInt(11);
+        pub const uniform: AddrSpace = @fromBackingInt(12);
+        pub const push_constant: AddrSpace = @fromBackingInt(13);
     };
 
     // See llvm/include/llvm/CodeGen/WasmAddressSpaces.h
     pub const wasm = struct {
         pub const default: AddrSpace = @fromBackingInt(0);
         pub const variable: AddrSpace = @fromBackingInt(1);
-        pub const externref: AddrSpace = @fromBackingInt(10);
-        pub const funcref: AddrSpace = @fromBackingInt(20);
+    };
+
+    // See llvm/lib/TargetParser/TargetDataLayout.cpp
+    pub const riscv = struct {
+        pub const purecap: AddrSpace = @fromBackingInt(200);
+    };
+
+    // See llvm/lib/Target/AArch64/AArch64ISelLowering.h
+    pub const aarch64 = struct {
+        pub const ptr32_sptr: AddrSpace = @fromBackingInt(270);
+        pub const ptr32_uptr: AddrSpace = @fromBackingInt(271);
+        pub const ptr64: AddrSpace = @fromBackingInt(272);
     };
 
     pub fn format(addr_space: AddrSpace, w: *Writer) Writer.Error!void {
