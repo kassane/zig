@@ -33,14 +33,14 @@ pub const Error = struct {
     node_or_offset: u32,
     notes: []Note,
 
-    const InitOptions = struct {
+    const Options = struct {
         msg: []const u8,
         token: Ast.OptionalTokenIndex,
         node_or_offset: u32,
         notes: []Note,
     };
 
-    fn init(ast: *const Ast, options: InitOptions) Error {
+    fn init(ast: *const Ast, options: Error.Options) Error {
         return .{
             .msg = options.msg,
             .loc = astLoc(ast, options.token, options.node_or_offset),
@@ -74,13 +74,13 @@ pub const Error = struct {
         /// Otherwise, this is a byte offset into `token`.
         node_or_offset: u32,
 
-        const InitOptions = struct {
+        const Options = struct {
             msg: []const u8,
             token: Ast.OptionalTokenIndex,
             node_or_offset: u32,
         };
 
-        fn init(ast: *const Ast, options: @This().InitOptions) @This() {
+        fn init(ast: *const Ast, options: Note.Options) @This() {
             return .{
                 .msg = options.msg,
                 .loc = astLoc(ast, options.token, options.node_or_offset),
@@ -200,7 +200,7 @@ pub const Errors = struct {
     };
 };
 
-pub const FromSliceOptions = struct {
+pub const Options = struct {
     /// Used for scratch allocations.
     gpa: Allocator,
     /// Used for allocating errors and results.
@@ -218,7 +218,7 @@ pub const FromSliceOptions = struct {
 ///
 /// Human readable errors are written to `options.errors`. `options.arena` owns the errors, and any
 /// pointers that are part of `T`.
-pub fn fromSlice(T: type, options: FromSliceOptions) error{ OutOfMemory, ParseZon }!T {
+pub fn fromSlice(T: type, options: Options) error{ OutOfMemory, ParseZon }!T {
     var value: T = undefined;
     try fromSliceInner(T, &value, false, options);
     return value;
@@ -264,7 +264,7 @@ test fromSlice {
 
 /// Like `fromSlice` but the result type may not contain pointers, allowing it to outlive
 /// `options.arena`.
-pub fn fromSliceNoAlloc(T: type, options: FromSliceOptions) error{ OutOfMemory, ParseZon }!T {
+pub fn fromSliceNoAlloc(T: type, options: Options) error{ OutOfMemory, ParseZon }!T {
     comptime assert(!requiresAllocator(T));
     return fromSlice(T, options);
 }
@@ -277,7 +277,7 @@ pub fn fromSliceNoAlloc(T: type, options: FromSliceOptions) error{ OutOfMemory, 
 pub fn updateFromSlice(
     T: type,
     value: *T,
-    options: FromSliceOptions,
+    options: Options,
 ) error{ OutOfMemory, ParseZon }!void {
     try fromSliceInner(T, value, true, options);
 }
@@ -348,7 +348,7 @@ test updateFromSlice {
 pub fn updateFromSliceNoAlloc(
     T: type,
     value: *T,
-    options: FromSliceOptions,
+    options: Options,
 ) error{ OutOfMemory, ParseZon }!void {
     comptime assert(!requiresAllocator(T));
     try fromSliceInner(T, value, true, options);
@@ -358,7 +358,7 @@ fn fromSliceInner(
     T: type,
     value: *T,
     initialized: bool,
-    options: FromSliceOptions,
+    options: Options,
 ) error{ OutOfMemory, ParseZon }!void {
     var errors: std.ArrayList(Error) = .empty;
     defer options.errors.items = errors.items;
