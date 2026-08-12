@@ -214,10 +214,7 @@ pub const Options = struct {
     ignore_unknown_fields: bool = false,
 };
 
-/// Parses the given slice as ZON.
-///
-/// Human readable errors are written to `options.errors`. `options.arena` owns the errors, and any
-/// pointers that are part of `T`.
+/// Parses the given slice as ZON, writing any errors to `options.errors`.
 pub fn fromSlice(T: type, options: Options) error{ OutOfMemory, ParseZon }!T {
     var value: T = undefined;
     try fromSliceInner(T, &value, false, options);
@@ -269,11 +266,12 @@ pub fn fromSliceNoAlloc(T: type, options: Options) error{ OutOfMemory, ParseZon 
     return fromSlice(T, options);
 }
 
-/// Similar to `fromSlice`, but updates `value` in place. `value` must be initialized before this
-/// call, fields not specified in ZON are left unchanged.
+/// Similar to `fromSlice`, but updates the existing contents of `value` in place. Fields
+/// unspecified by ZON are left unchanged.
 ///
-/// Whenever a slice or an untagged union is specified, it completely overwites the previous value.
-/// On error, `value` remains valid, but may be partially updated.
+/// Assumes that `value` points to a fully initialized value prior to this call. Slices and untagged
+/// unions are replaced in their entirey when specified. On error, `value` remains valid, but may be
+/// partially updated.
 pub fn updateFromSlice(
     T: type,
     value: *T,
