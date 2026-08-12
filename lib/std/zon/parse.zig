@@ -224,6 +224,44 @@ pub fn fromSlice(T: type, options: FromSliceOptions) error{ OutOfMemory, ParseZo
     return value;
 }
 
+test fromSlice {
+    const gpa = std.testing.allocator;
+    var arena_allocator: ArenaAllocator = .init(gpa);
+    defer arena_allocator.deinit();
+    const arena = arena_allocator.allocator();
+
+    const TextureOptions = struct {
+        const AddressMode = enum { clamp, reflect, wrap, zero };
+        address_mode: struct { u: AddressMode = .wrap, v: AddressMode = .wrap },
+        mipmaps: bool = true,
+        premultiply: bool = true,
+    };
+
+    const source =
+        \\.{
+        \\    .address_mode = .{ .u = .clamp },
+        \\    .mipmaps = false,
+        \\}
+    ;
+
+    var errors: Errors = .empty;
+    const options = fromSlice(TextureOptions, .{
+        .gpa = gpa,
+        .arena = arena,
+        .source = source,
+        .errors = &errors,
+    }) catch |err| {
+        errors.log("texture_options.zon", err);
+        return err;
+    };
+
+    try std.testing.expectEqualDeep(TextureOptions{
+        .address_mode = .{ .u = .clamp, .v = .wrap },
+        .mipmaps = false,
+        .premultiply = true,
+    }, options);
+}
+
 /// Like `fromSlice` but the result type may not contain pointers, allowing it to outlive
 /// `options.arena`.
 pub fn fromSliceNoAlloc(T: type, options: FromSliceOptions) error{ OutOfMemory, ParseZon }!T {
@@ -242,6 +280,67 @@ pub fn updateFromSlice(
     options: FromSliceOptions,
 ) error{ OutOfMemory, ParseZon }!void {
     try fromSliceInner(T, value, true, options);
+}
+
+test updateFromSlice {
+    const gpa = std.testing.allocator;
+    var arena_allocator: ArenaAllocator = .init(gpa);
+    defer arena_allocator.deinit();
+    const arena = arena_allocator.allocator();
+
+    const MyTextEditorConfig = struct {
+        indentation: enum { spaces, tabs },
+        columns: []const u16,
+        dark_mode: enum { auto, dark, light },
+        theme: []const u8,
+    };
+
+    const global_config =
+        \\.{
+        \\    .indentation = .spaces,
+        \\    .columns = .{ 100 },
+        \\    .dark_mode = .dark,
+        \\}
+    ;
+    const project_config =
+        \\.{
+        \\    .indentation = .tabs,
+        \\}
+    ;
+
+    var config: MyTextEditorConfig = .{
+        .indentation = .spaces,
+        .columns = &.{},
+        .dark_mode = .auto,
+        .theme = "default",
+    };
+
+    var errors: Errors = .empty;
+    updateFromSlice(MyTextEditorConfig, &config, .{
+        .gpa = gpa,
+        .arena = arena,
+        .source = global_config,
+        .errors = &errors,
+    }) catch |err| {
+        errors.log("global_config.zon", err);
+        return err;
+    };
+    updateFromSlice(MyTextEditorConfig, &config, .{
+        .gpa = gpa,
+        .arena = arena,
+        .source = project_config,
+        .errors = &errors,
+    }) catch |err| {
+        errors.log("project_config.zon", err);
+        return err;
+    };
+
+    try std.testing.expectEqualDeep(MyTextEditorConfig{
+        .indentation = .tabs,
+        .columns = &.{100},
+        .dark_mode = .dark,
+        .theme = "default",
+    }, config);
 }
 
 /// Like `updateFromSlice` but the `T` may not contain pointers, allowing `value` to outlive
