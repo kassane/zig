@@ -184,7 +184,10 @@ pub fn create(arena: Allocator, options: CreateOptions) !*Module {
                 return error.PieRequiresPic;
             break :b true;
         }
-        if (options.global.link_mode == .dynamic and target_util.requiresPicForDynamicLink(target)) {
+        if (options.global.output_mode == .Lib and
+            options.global.link_mode == .dynamic and
+            target_util.requiresPicForDynamicLink(target))
+        {
             if (options.inherited.pic == false)
                 return error.DynamicLinkingRequiresPic;
             break :b true;
