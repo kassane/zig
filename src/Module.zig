@@ -195,10 +195,9 @@ pub fn create(arena: Allocator, options: CreateOptions) !*Module {
         if (options.inherited.pic) |x| break :b x;
         if (options.parent) |p| break :b p.pic;
 
-        // Default to PIC on targets where we default to producing PIEs to make
-        // the common case of linking objects and static libraries into an
-        // executable work out of the box.
-        break :b target_util.defaultPie(target);
+        // Default to PIC for objects and static libraries to make the common
+        // cases of linking those into a PIE or a shared library just work.
+        break :b options.global.output_mode != .Exe;
     };
 
     const red_zone = b: {
