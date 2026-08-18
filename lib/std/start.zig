@@ -596,6 +596,9 @@ fn wWinMain(hInstance: *anyopaque, hPrevInstance: ?*anyopaque, pCmdLine: [*:0]u1
     return root.wWinMain(@ptrCast(hInstance), @ptrCast(hPrevInstance), pCmdLine, @intCast(nCmdShow));
 }
 
+/// Provided by compiler-rt.
+extern var __zig_elf_auxv: [*]std.elf.Auxv;
+
 fn posixCallMainAndExit(argc_argv_ptr: [*]usize) callconv(.c) noreturn {
     // We're not ready to panic until thread local storage is initialized.
     @setRuntimeSafety(false);
@@ -638,7 +641,7 @@ fn posixCallMainAndExit(argc_argv_ptr: [*]usize) callconv(.c) noreturn {
     if (native_os == .linux) {
         // This must be done after PIE relocations have been applied or we may crash
         // while trying to access the global variable (happens on MIPS at least).
-        std.os.linux.elf_aux_maybe = auxv;
+        __zig_elf_auxv = auxv;
 
         if (!builtin.single_threaded) {
             // ARMv6 targets (and earlier) have no support for TLS in hardware.
