@@ -123,7 +123,6 @@ pub const gid_t = u32;
 pub const clock_t = isize;
 pub const time_t = arch_bits.time_t;
 
-pub const tls = @import("linux/tls.zig");
 pub const BPF = @import("linux/bpf.zig");
 pub const IOCTL = @import("linux/ioctl.zig");
 pub const SECCOMP = @import("linux/seccomp.zig");
