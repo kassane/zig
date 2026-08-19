@@ -5,10 +5,7 @@ const compiler_rt = @import("../../compiler_rt.zig");
 const symbol = compiler_rt.symbol;
 
 comptime {
-    // FreeBSD, NetBSD, and OpenBSD are expected to also use this in the future.
-    if (!builtin.link_libc and builtin.target.os.tag == .linux) {
-        symbol(@ptrCast(&__zig_elf_auxv), "__zig_elf_auxv");
-    }
+    symbol(@ptrCast(&__zig_elf_auxv), "__zig_elf_auxv");
 }
 
 /// Populated by `std.start` when libc is not linked on targets that provide an ELF auxiliary vector

@@ -11,32 +11,28 @@
 
 const builtin = @import("builtin");
 const std = @import("std");
-
-const compiler_rt = @import("../../compiler_rt.zig");
-const symbol = compiler_rt.symbol;
-
 const elf = std.elf;
 const assert = std.debug.assert;
 const native_arch = builtin.cpu.arch;
 const linux = std.os.linux;
 const page_size_min = std.heap.page_size_min;
 
-comptime {
-    // FreeBSD, NetBSD, and OpenBSD are expected to also use this in the future.
-    if (!builtin.link_libc and builtin.target.os.tag == .linux) {
-        symbol(&__zig_elf_static_tls, "__zig_elf_static_tls");
-        symbol(&__zig_elf_static_tls_init, "__zig_elf_static_tls_init");
-        symbol(&__zig_elf_static_tls_fill, "__zig_elf_static_tls_fill");
+const compiler_rt = @import("../../compiler_rt.zig");
+const symbol = compiler_rt.symbol;
 
-        // To make static executables without libc work, it is our job to provide the TLS accessor
-        // function for the GD and LD models. This function is unlikely to actually be used, since
-        // the linker should be able to relax every TLS access to the LE model and therefore
-        // eliminate all calls to this function, but that isn't guaranteed.
-        if (native_arch == .s390x)
-            symbol(&__tls_get_offset, "__tls_get_offset")
-        else
-            symbol(&__tls_get_addr, "__tls_get_addr");
-    }
+comptime {
+    symbol(&__zig_elf_static_tls, "__zig_elf_static_tls");
+    symbol(&__zig_elf_static_tls_init, "__zig_elf_static_tls_init");
+    symbol(&__zig_elf_static_tls_fill, "__zig_elf_static_tls_fill");
+
+    // To make static executables without libc work, it is our job to provide the TLS accessor
+    // function for the GD and LD models. This function is unlikely to actually be used, since the
+    // linker should be able to relax every TLS access to the LE model and therefore eliminate all
+    // calls to this function, but that isn't guaranteed.
+    if (native_arch == .s390x)
+        symbol(&__tls_get_offset, "__tls_get_offset")
+    else
+        symbol(&__tls_get_addr, "__tls_get_addr");
 }
 
 /// Represents an ELF TLS variant.
