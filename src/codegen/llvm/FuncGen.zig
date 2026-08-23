@@ -6542,28 +6542,19 @@ fn airPrefetch(self: *FuncGen, inst: Air.Inst.Index) Allocator.Error!Builder.Val
     comptime assert(@backingInt(std.lang.PrefetchOptions.Cache.instruction) == 0);
     comptime assert(@backingInt(std.lang.PrefetchOptions.Cache.data) == 1);
 
-    // LLVM fails during codegen of instruction cache prefetchs for these architectures.
-    // This is an LLVM bug as the prefetch intrinsic should be a noop if not supported
-    // by the target.
-    // To work around this, don't emit llvm.prefetch in this case.
-    // See https://bugs.llvm.org/show_bug.cgi?id=21037
     const zcu = self.object.zcu;
     const target = zcu.getTarget();
     switch (prefetch.cache) {
         .instruction => switch (target.cpu.arch) {
+            // https://github.com/llvm/llvm-project/issues/218236
             .x86_64,
             .x86,
+            // https://github.com/llvm/llvm-project/issues/218239
             .powerpc,
             .powerpcle,
             .powerpc64,
             .powerpc64le,
             => return .none,
-            .arm, .armeb, .thumb, .thumbeb => {
-                switch (prefetch.rw) {
-                    .write => return .none,
-                    else => {},
-                }
-            },
             else => {},
         },
         .data => {},
