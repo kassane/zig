@@ -180,7 +180,8 @@ extern _LIBCXXABI_FUNC_VIS bool __cxa_uncaught_exception() _LIBCXXABI_NOEXCEPT;
 extern _LIBCXXABI_FUNC_VIS unsigned int __cxa_uncaught_exceptions() _LIBCXXABI_NOEXCEPT;
 
 // zig patch: haiku support
-#if defined(__linux__) || defined(__Fuchsia__) || defined(__HAIKU__)
+// zig patch: serenity support
+#if defined(__linux__) || defined(__Fuchsia__) || defined(__HAIKU__) || defined(__serenity__)
 // Linux and Fuchsia TLS support. Not yet an official part of the Itanium ABI.
 // https://sourceware.org/glibc/wiki/Destructor%20support%20for%20thread_local%20variables
 extern _LIBCXXABI_FUNC_VIS int __cxa_thread_atexit(void (*)(void *), void *,

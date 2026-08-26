@@ -131,6 +131,9 @@
 // zig patch: haiku support
 #  elif defined(__HAIKU__)
 #    include <__locale_dir/support/haiku.h>
+// zig patch: serenity support
+#  elif defined(__serenity__)
+#    include <__locale_dir/support/serenity.h>
 #  else
 
 // TODO: This is a temporary definition to bridge between the old way we defined the locale base API
