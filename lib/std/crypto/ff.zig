@@ -240,6 +240,19 @@ pub fn Uint(comptime max_bits: comptime_int) type {
             return x.conditionalSubWithOverflow(true, y);
         }
 
+        /// Adds the product of `x` and `y` to `acc`, wrapping at the active width.
+        /// Returns 1 if any part of the result was discarded.
+        pub fn mulAddWithOverflow(acc: *Self, x: Self, y: Self) u1 {
+            assert(x.limbs_len == acc.limbs_len);
+            assert(y.limbs_len == acc.limbs_len);
+            const n = acc.limbs_len;
+            var wide: [2 * max_limbs_count]Limb = undefined;
+            @memcpy(wide[0..n], acc.limbsConst());
+            addMulVV(wide[0 .. 2 * n], x.limbsConst(), y.limbsConst());
+            @memcpy(acc.limbs(), wide[0..n]);
+            return @intFromBool(!ct.eql(orLimbs(wide[n..][0..n]), 0));
+        }
+
         fn expandTo(x: *Self, new_len: usize) void {
             assert(new_len >= x.limbs_len and new_len <= x.limbs_buffer.len);
             @memset(x.limbs_buffer[x.limbs_len..new_len], 0);
@@ -400,6 +413,30 @@ fn orLimbs(limbs: []const Limb) Limb {
         t |= limb;
     }
     return t;
+}
+
+// Adds `x * y` to `z` and returns the carry.
+fn addMulVVW(z: []Limb, x: []const Limb, y: Limb) Limb {
+    assert(z.len == x.len);
+    var carry: Limb = 0;
+    for (z, x) |*z_limb, x_limb| {
+        const wide = ct.mulWide(x_limb, y);
+        var z_lo = @addWithOverflow(z_limb.*, wide.lo);
+        var z_hi = wide.hi +% z_lo[1];
+        z_lo = @addWithOverflow(z_lo[0], carry);
+        z_hi +%= z_lo[1];
+        z_limb.* = @as(TLimb, @truncate(z_lo[0]));
+        carry = (z_hi << 1) | (z_lo[0] >> t_bits);
+    }
+    return carry;
+}
+
+// Adds `x * y` to the low `x.len` limbs of `z`. The upper limbs need no initialization.
+fn addMulVV(z: []Limb, x: []const Limb, y: []const Limb) void {
+    assert(z.len == x.len + y.len);
+    for (y, 0..) |y_limb, i| {
+        z[i + x.len] = addMulVVW(z[i..][0..x.len], x, y_limb);
+    }
 }
 
 /// A modulus, defining a finite field.
@@ -1236,4 +1273,29 @@ test "Uint addition and multiply-add" {
     try testing.expect(wrapped.eql(full));
     try testing.expectEqual(1, wrapped.addWithOverflow(one));
     try testing.expect(wrapped.isZero());
+
+    for ([_]struct { acc: U, x: U, y: U, overflow: u1, expected: U }{
+        .{ .acc = U.zero, .x = full, .y = one, .overflow = 0, .expected = full },
+        .{ .acc = full, .x = U.zero, .y = full, .overflow = 0, .expected = full },
+        .{ .acc = full, .x = full, .y = U.zero, .overflow = 0, .expected = full },
+        .{ .acc = U.zero, .x = full, .y = full, .overflow = 1, .expected = one },
+        .{ .acc = full, .x = one, .y = one, .overflow = 1, .expected = U.zero },
+    }) |c| {
+        var acc = c.acc;
+        try testing.expectEqual(c.overflow, acc.mulAddWithOverflow(c.x, c.y));
+        try testing.expect(acc.eql(c.expected));
+        try expectWellFormedLimbs(acc);
+    }
+    const a: u256 = (1 << 100) + 3;
+    const b: u256 = (1 << 80) + 7;
+    var acc = try U.fromPrimitive(u256, a);
+    try testing.expectEqual(0, acc.mulAddWithOverflow(try U.fromPrimitive(u256, a), try U.fromPrimitive(u256, b)));
+    try testing.expectEqual(a + a * b, try acc.toPrimitive(u256));
+
+    var short = one.normalize();
+    const high = (try U.fromPrimitive(u64, 1 << (t_bits - 1))).normalize();
+    const two = (try U.fromPrimitive(u8, 2)).normalize();
+    try testing.expectEqual(1, short.mulAddWithOverflow(high, two));
+    try testing.expectEqual(1, short.limbs_len);
+    try testing.expect(short.isOne());
 }
