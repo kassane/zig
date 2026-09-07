@@ -53,8 +53,10 @@ pub const FieldElementError = error{NonCanonical};
 /// Invalid representation (Montgomery vs non-Montgomery domain.)
 pub const RepresentationError = error{UnexpectedRepresentation};
 
+pub const DivisionByZeroError = error{DivisionByZero};
+
 /// The set of all possible errors `std.crypto.ff` functions can return.
-pub const Error = OverflowError || InvalidModulusError || NullExponentError || FieldElementError || RepresentationError;
+pub const Error = OverflowError || InvalidModulusError || NullExponentError || FieldElementError || RepresentationError || DivisionByZeroError;
 
 /// An unsigned big integer with a fixed maximum size (`max_bits`), suitable for cryptographic operations.
 /// Storage rounds up to whole limbs and can hold up to `capacity_bits` bits.
@@ -296,6 +298,54 @@ pub fn Uint(comptime max_bits: comptime_int) type {
                 x_limbs[i] = @as(TLimb, @truncate(lo | hi));
             }
             @memset(x_limbs[active..], 0);
+        }
+
+        /// Divides by `divisor` in place and returns the remainder.
+        /// Returns `error.DivisionByZero` without changing the integer if `divisor` is zero.
+        pub fn divRemPublic(x: *Self, divisor: usize) DivisionByZeroError!usize {
+            if (divisor == 0) return error.DivisionByZero;
+            const Wide = @Int(.unsigned, 2 * @bitSizeOf(Limb));
+            const x_limbs = x.limbs();
+            var rem: Limb = 0;
+            var i = x.limbs_len;
+            while (i != 0) {
+                i -= 1;
+                const num = (@as(Wide, rem) << t_bits) | x_limbs[i];
+                x_limbs[i] = @intCast(num / divisor);
+                rem = @intCast(num % divisor);
+            }
+            return rem;
+        }
+
+        /// Returns the greatest common divisor, with gcd(x, 0) = x.
+        /// Returns `error.DivisionByZero` if both operands are zero.
+        pub fn gcdPublic(x: Self, y: Self) DivisionByZeroError!Self {
+            if (x.isZero() and y.isZero()) return error.DivisionByZero;
+            if (x.isZero()) return y;
+            if (y.isZero()) return x;
+
+            var a = x;
+            var b = y;
+            const len = @max(a.limbs_len, b.limbs_len);
+            a.expandTo(len);
+            b.expandTo(len);
+
+            const a_shift = a.trailingZeroBitsPublic();
+            const b_shift = b.trailingZeroBitsPublic();
+            a.shiftRightPublic(a_shift);
+            b.shiftRightPublic(b_shift);
+            while (true) {
+                switch (a.compare(b)) {
+                    .eq => break,
+                    .lt => mem.swap(Self, &a, &b),
+                    .gt => {},
+                }
+                _ = a.subWithOverflow(b);
+                a.shiftRightPublic(a.trailingZeroBitsPublic());
+            }
+
+            a.shiftLeft(@min(a_shift, b_shift)); // GCD always fits in either input, overflow is never an issue
+            return a;
         }
 
         fn expandTo(x: *Self, new_len: usize) void {
@@ -1369,6 +1419,34 @@ test "Uint bit measurement and shifts" {
     x.shiftRightPublic(t_bits);
     try testing.expect(x.isZero());
     try testing.expectEqual(1, x.limbs_len);
+}
+
+test "Uint division and gcd" {
+    if (builtin.zig_backend == .stage2_c) return error.SkipZigTest;
+
+    const U = Uint(256);
+    const v: u256 = (1 << 255) + (1 << t_bits) + 13;
+    for ([_]usize{ 1, 7, math.maxInt(TLimb), (1 << t_bits) + 5, math.maxInt(usize) }) |divisor| {
+        var x = try U.fromPrimitive(u256, v);
+        try testing.expectEqual(v % divisor, try x.divRemPublic(divisor));
+        try testing.expectEqual(v / divisor, try x.toPrimitive(u256));
+        try expectWellFormedLimbs(x);
+    }
+    var x = (try U.fromPrimitive(u16, 1000)).normalize();
+    try testing.expectError(error.DivisionByZero, x.divRemPublic(0));
+    try testing.expectEqual(6, try x.divRemPublic(7));
+    try testing.expectEqual(142, try x.toPrimitive(u16));
+    try testing.expectEqual(1, x.limbs_len);
+    try testing.expectEqual(142, try x.divRemPublic(1000));
+    try testing.expectEqual(0, try x.divRemPublic(7));
+
+    for ([_][3]u256{ .{ 0, 5, 5 }, .{ 6, 6, 6 }, .{ 17, 4, 1 }, .{ 15 << 200, 21 << 100, 3 << 100 } }) |c| {
+        const a = (try U.fromPrimitive(u256, c[0])).normalize();
+        const b = try U.fromPrimitive(u256, c[1]);
+        try testing.expectEqual(c[2], try (try a.gcdPublic(b)).toPrimitive(u256));
+        try testing.expectEqual(c[2], try (try b.gcdPublic(a)).toPrimitive(u256));
+    }
+    try testing.expectError(error.DivisionByZero, U.zero.gcdPublic(U.zero));
 }
 
 test "Uint addition and multiply-add" {
