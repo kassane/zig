@@ -3,6 +3,8 @@
 //! Unlike `std.math.big`, these integers have a fixed maximum length and are only designed to be used for modular arithmetic.
 //! Arithmetic operations are meant to run in constant-time for a given modulus, making them suitable for cryptography.
 //!
+//! Functions with `Public` in their name are the exception.
+//!
 //! Parts of that code was ported from the BSD-licensed crypto/internal/bigmod/nat.go file in the Go language, itself inspired from BearSSL.
 
 const std = @import("std");
@@ -253,6 +255,49 @@ pub fn Uint(comptime max_bits: comptime_int) type {
             return @intFromBool(!ct.eql(orLimbs(wide[n..][0..n]), 0));
         }
 
+        /// Returns the bit length, or 0 for zero.
+        pub fn bitLenPublic(x: Self) usize {
+            var i = x.limbs_len;
+            while (i != 0) {
+                i -= 1;
+                const limb = x.limbsConst()[i];
+                if (limb != 0) {
+                    return i * t_bits + t_bits - @clz(@as(TLimb, @intCast(limb)));
+                }
+            }
+            return 0;
+        }
+
+        /// Returns the number of trailing zero bits, or the active width for zero.
+        pub fn trailingZeroBitsPublic(x: Self) usize {
+            for (x.limbsConst(), 0..) |limb, i| {
+                if (limb != 0) {
+                    return i * t_bits + @ctz(@as(TLimb, @intCast(limb)));
+                }
+            }
+            return x.limbs_len * t_bits;
+        }
+
+        pub fn shiftRightPublic(x: *Self, shift: usize) void {
+            const limb_shift = shift / t_bits;
+            const bit_shift = shift % t_bits;
+            const x_limbs = x.limbs();
+            if (limb_shift >= x_limbs.len) {
+                @memset(x_limbs, 0);
+                return;
+            }
+            const active = x_limbs.len - limb_shift;
+            for (0..active) |i| {
+                const lo = math.shr(Limb, x_limbs[i + limb_shift], bit_shift);
+                const hi = if (i + limb_shift + 1 < x_limbs.len)
+                    math.shl(Limb, x_limbs[i + limb_shift + 1], t_bits - bit_shift)
+                else
+                    0;
+                x_limbs[i] = @as(TLimb, @truncate(lo | hi));
+            }
+            @memset(x_limbs[active..], 0);
+        }
+
         fn expandTo(x: *Self, new_len: usize) void {
             assert(new_len >= x.limbs_len and new_len <= x.limbs_buffer.len);
             @memset(x.limbs_buffer[x.limbs_len..new_len], 0);
@@ -288,6 +333,40 @@ pub fn Uint(comptime max_bits: comptime_int) type {
                 borrow = @truncate(res >> t_bits);
             }
             return borrow;
+        }
+
+        fn shiftLeft(x: *Self, shift: usize) void {
+            assert(x.bitLenPublic() + shift <= x.limbs_len * t_bits);
+            const limb_shift = shift / t_bits;
+            const bit_shift = shift % t_bits;
+            const x_limbs = x.limbs();
+            var i = x_limbs.len;
+            while (i != 0) {
+                i -= 1;
+                const hi = if (i >= limb_shift)
+                    math.shl(Limb, x_limbs[i - limb_shift], bit_shift)
+                else
+                    0;
+                const lo = if (i >= limb_shift + 1)
+                    math.shr(Limb, x_limbs[i - limb_shift - 1], t_bits - bit_shift)
+                else
+                    0;
+                x_limbs[i] = @as(TLimb, @truncate(hi | lo));
+            }
+        }
+
+        // Shifts in `carry` at the top and returns the low bit shifted out.
+        fn shiftRightByOneWithCarry(x: *Self, carry: u1) u1 {
+            var c: Limb = carry;
+            var i = x.limbs_len;
+            const x_limbs = x.limbs();
+            while (i != 0) {
+                i -= 1;
+                const limb = x_limbs[i];
+                x_limbs[i] = (limb >> 1) | (c << (t_bits - 1));
+                c = @as(u1, @truncate(limb));
+            }
+            return @truncate(c);
         }
     };
 }
@@ -1254,6 +1333,42 @@ test "field element decoding" {
         try x.toBytes(&buf, endian);
         try testing.expect(x.eql(try M.Fe.fromBytes(m, &buf, endian)));
     }
+}
+
+test "Uint bit measurement and shifts" {
+    if (builtin.zig_backend == .stage2_c) return error.SkipZigTest;
+
+    const U = Uint(256);
+    try testing.expectEqual(0, U.zero.bitLenPublic());
+    try testing.expectEqual(U.max_limbs_count * t_bits, U.zero.trailingZeroBitsPublic());
+    try testing.expectEqual(t_bits, U.zero.normalize().trailingZeroBitsPublic());
+    for ([_]usize{ 0, t_bits - 1, t_bits, t_bits + 1, 255 }) |offset| {
+        const x = try U.fromPrimitive(u256, math.shl(u256, 1, offset));
+        try testing.expectEqual(offset + 1, x.bitLenPublic());
+        try testing.expectEqual(offset, x.trailingZeroBitsPublic());
+    }
+
+    const v: u256 = (1 << 255) | (1 << t_bits) | 3;
+    for ([_]usize{ 0, 1, t_bits - 1, t_bits, t_bits + 1, U.max_limbs_count * t_bits, 10_000 }) |shift| {
+        var x = try U.fromPrimitive(u256, v);
+        x.shiftRightPublic(shift);
+        try testing.expectEqual(math.shr(u256, v, shift), try x.toPrimitive(u256));
+        try testing.expectEqual(U.max_limbs_count, x.limbs_len);
+        try expectWellFormedLimbs(x);
+    }
+    for ([_]usize{ 0, 1, t_bits - 1, t_bits, t_bits + 1 }) |shift| {
+        var x = try U.fromPrimitive(u256, (1 << t_bits) + 3);
+        x.shiftLeft(shift);
+        try testing.expectEqual(math.shl(u256, (1 << t_bits) + 3, shift), try x.toPrimitive(u256));
+    }
+
+    var x = (try U.fromPrimitive(u8, 5)).normalize();
+    try testing.expectEqual(1, x.shiftRightByOneWithCarry(1));
+    try testing.expectEqual((1 << (t_bits - 1)) + 2, try x.toPrimitive(u64));
+    try testing.expectEqual(0, x.shiftRightByOneWithCarry(0));
+    x.shiftRightPublic(t_bits);
+    try testing.expect(x.isZero());
+    try testing.expectEqual(1, x.limbs_len);
 }
 
 test "Uint addition and multiply-add" {
