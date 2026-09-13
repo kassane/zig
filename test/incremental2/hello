@@ -1,0 +1,28 @@
+#exe {
+-Mroot=main.zig
+#}
+
+#write main.zig {
+const std = @import("std");
+const io = std.Io.Threaded.global_single_threaded.io();
+pub fn main() !void {
+    try std.Io.File.stdout().writeStreamingAll(io, "good morning\n");
+}
+#}
+#update
+#check stdout {
+good morning
+#}
+
+#write main.zig {
+const std = @import("std");
+const io = std.Io.Threaded.global_single_threaded.io();
+pub fn main() !void {
+    try std.Io.File.stdout().writeStreamingAll(io, "おはようございます\n");
+}
+#}
+#update {
+change the string#}
+#check stdout {
+おはようございます
+#}

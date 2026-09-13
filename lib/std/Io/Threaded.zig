@@ -4462,7 +4462,7 @@ fn dirCreateFilePosix(
         var fl_flags: usize = fl: {
             const syscall: Syscall = try .start();
             while (true) {
-                const rc = posix.system.fcntl(fd, posix.F.GETFL, @as(usize, 0));
+                const rc = posix.system.fcntl(fd, posix.F.GETFL, @as(u32, 0));
                 switch (posix.errno(rc)) {
                     .SUCCESS => {
                         syscall.finish();
@@ -5058,7 +5058,7 @@ fn dirOpenFilePosix(
         var fl_flags: usize = fl: {
             const syscall: Syscall = try .start();
             while (true) {
-                const rc = posix.system.fcntl(fd, posix.F.GETFL, @as(usize, 0));
+                const rc = posix.system.fcntl(fd, posix.F.GETFL, @as(u32, 0));
                 switch (posix.errno(rc)) {
                     .SUCCESS => {
                         syscall.finish();
@@ -15230,16 +15230,12 @@ fn spawnPosix(t: *Threaded, options: process.SpawnOptions) process.SpawnError!Sp
     const argv_buf = try arena.allocSentinel(?[*:0]const u8, options.argv.len, null);
     for (options.argv, 0..) |arg, i| argv_buf[i] = (try arena.dupeSentinel(u8, arg, 0)).ptr;
 
-    const prog_fileno = 3;
-    comptime assert(@max(posix.STDIN_FILENO, posix.STDOUT_FILENO, posix.STDERR_FILENO) + 1 == prog_fileno);
-
     const env_block = env_block: {
-        const prog_fd: i32 = if (prog_pipe[1] == -1) -1 else prog_fileno;
         if (options.environ_map) |environ_map| break :env_block try environ_map.createPosixBlock(arena, .{
-            .zig_progress_fd = prog_fd,
+            .zig_progress_fd = prog_pipe[1],
         });
         break :env_block try t.environ.process_environ.createPosixBlock(arena, .{
-            .zig_progress_fd = prog_fd,
+            .zig_progress_fd = prog_pipe[1],
         });
     };
 
@@ -15267,23 +15263,42 @@ fn spawnPosix(t: *Threaded, options: process.SpawnOptions) process.SpawnError!Sp
         if (Thread.current) |current_thread| current_thread.cancel_protection = .blocked;
         const ep1 = err_pipe[1];
 
-        setUpChildIo(options.stdin, stdin_pipe[0], posix.STDIN_FILENO, dev_null_fd) catch |err| forkBail(ep1, err);
-        setUpChildIo(options.stdout, stdout_pipe[1], posix.STDOUT_FILENO, dev_null_fd) catch |err| forkBail(ep1, err);
-        setUpChildIo(options.stderr, stderr_pipe[1], posix.STDERR_FILENO, dev_null_fd) catch |err| forkBail(ep1, err);
-
+        // Must happen befor clobbering fds below.
         switch (options.cwd) {
             .inherit => {},
-            .dir => |cwd| {
-                fchdir(cwd.handle) catch |err| forkBail(ep1, err);
-            },
-            .path => |cwd| {
-                chdir(cwd) catch |err| forkBail(ep1, err);
-            },
+            .dir => |cwd| fchdir(cwd.handle) catch |err| forkBail(ep1, err),
+            .path => |cwd| chdir(cwd) catch |err| forkBail(ep1, err),
         }
 
-        // Must happen after fchdir above, the cwd file descriptor might be
-        // equal to prog_fileno and be clobbered by this dup2 call.
-        if (prog_pipe[1] != -1) dup2(prog_pipe[1], prog_fileno) catch |err| forkBail(ep1, err);
+        for (options.inherit_dirs) |dir| switch (posix.errno(
+            posix.system.fcntl(dir.handle, posix.F.SETFD, @as(u32, 0)),
+        )) {
+            .SUCCESS => {},
+            else => |err| forkBail(ep1, posix.unexpectedErrno(err)),
+        };
+        for (options.inherit_files) |file| switch (posix.errno(
+            posix.system.fcntl(file.handle, posix.F.SETFD, @as(u32, 0)),
+        )) {
+            .SUCCESS => {},
+            else => |err| forkBail(ep1, posix.unexpectedErrno(err)),
+        };
+        if (prog_pipe[1] != -1) switch (posix.errno(
+            posix.system.fcntl(prog_pipe[1], posix.F.SETFD, @as(u32, 0)),
+        )) {
+            .SUCCESS => {},
+            else => |err| forkBail(ep1, posix.unexpectedErrno(err)),
+        };
+        for (
+            [_]process.SpawnOptions.StdIo{ options.stdin, options.stdout, options.stderr },
+            [_]posix.fd_t{ stdin_pipe[0], stdout_pipe[1], stderr_pipe[1] },
+            [_]posix.fd_t{ posix.STDIN_FILENO, posix.STDOUT_FILENO, posix.STDERR_FILENO },
+        ) |stdio, pipe_fd, std_fd| switch (stdio) {
+            .pipe => dup2(pipe_fd, std_fd) catch |err| forkBail(ep1, err),
+            .close => closeFd(std_fd),
+            .inherit => {},
+            .ignore => dup2(dev_null_fd, std_fd) catch |err| forkBail(ep1, err),
+            .file => |file| dup2(file.handle, std_fd) catch |err| forkBail(ep1, err),
+        };
 
         if (options.gid) |gid| {
             switch (posix.errno(posix.system.setregid(gid, gid))) {
@@ -15744,16 +15759,6 @@ const ErrInt = @Int(.unsigned, @sizeOf(anyerror) * 8);
 fn destroyPipe(pipe: [2]posix.fd_t) void {
     if (pipe[0] != -1) closeFd(pipe[0]);
     if (pipe[0] != pipe[1]) closeFd(pipe[1]);
-}
-
-fn setUpChildIo(stdio: process.SpawnOptions.StdIo, pipe_fd: i32, std_fileno: i32, dev_null_fd: i32) !void {
-    switch (stdio) {
-        .pipe => try dup2(pipe_fd, std_fileno),
-        .close => closeFd(std_fileno),
-        .inherit => {},
-        .ignore => try dup2(dev_null_fd, std_fileno),
-        .file => |file| try dup2(file.handle, std_fileno),
-    }
 }
 
 fn processSpawnWindows(userdata: ?*anyopaque, options: process.SpawnOptions) process.SpawnError!process.Child {

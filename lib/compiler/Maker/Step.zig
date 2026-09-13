@@ -270,7 +270,10 @@ pub fn make(
             .compile => break :t null,
             .run => {
                 const run_flags: Configuration.Step.Run.Flags = @bitCast(flags);
-                if (run_flags.stdio == .zig_test) break :t null;
+                switch (run_flags.stdio) {
+                    .infer_from_args, .inherit, .check => {},
+                    .zig_test, .protocol => break :t null,
+                }
             },
             else => {},
         }

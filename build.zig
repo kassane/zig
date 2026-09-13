@@ -804,6 +804,27 @@ pub fn build(b: *std.Build) !void {
         .skip_wasm = skip_wasm,
         .max_rss = 4_300_000_000,
     })) |test_libc_nsz_step| test_step.dependOn(test_libc_nsz_step);
+
+    const runner = b.addExecutable(.{
+        .name = "runner",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("test/src/runner.zig"),
+            .target = b.graph.host,
+        }),
+    });
+    test_step.dependOn(try tests.addNewIncrementalTests(b, runner, .{
+        .test_filters = test_filters,
+        .test_target_filters = test_target_filters,
+        .skip_non_native = skip_non_native,
+        .skip_wasm = skip_wasm,
+        .skip_freebsd = skip_freebsd,
+        .skip_netbsd = skip_netbsd,
+        .skip_openbsd = skip_openbsd,
+        .skip_windows = skip_windows,
+        .skip_darwin = skip_darwin,
+        .skip_linux = skip_linux,
+        .skip_llvm = skip_llvm,
+    }));
 }
 
 fn addWasiUpdateStep(b: *std.Build, version: [:0]const u8) !void {

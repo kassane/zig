@@ -3365,7 +3365,7 @@ pub fn addIncrementalTests(
 
     var it = try dir.walk(b.graph.arena);
     while (try it.next(io)) |entry| {
-        if (std.mem.endsWith(u8, entry.basename, ".swp")) continue;
+        if (isEditorFileName(entry.basename)) continue;
 
         for (options.test_filters) |test_filter| {
             if (std.mem.find(u8, entry.path, test_filter)) |_| break;
@@ -3433,6 +3433,91 @@ pub fn addIncrementalTests(
             test_step.dependOn(&run.step);
         }
     }
+}
+
+pub fn addNewIncrementalTests(
+    b: *std.Build,
+    runner: *std.Build.Step.Compile,
+    options: IncrementalTestOptions,
+) !*Step {
+    const tests_step = b.step("test-new-incremental", "Run the new incremental compilation test cases");
+
+    const tests_path = b.path("test/incremental2");
+    b.dependOnDirectoryContents(tests_path);
+
+    var tests_dir = try b.root.openDir(b.graph.io, "test/incremental2", .{ .iterate = true });
+    defer tests_dir.close(b.graph.io);
+    var test_it = tests_dir.iterate();
+    while (try test_it.next(b.graph.io)) |@"test"| {
+        const test_path = tests_path.path(b, @"test".name);
+        switch (@"test".kind) {
+            else => continue,
+            .file => if (isEditorFileName(@"test".name)) continue,
+            .directory => {},
+        }
+
+        for (incremental_targets) |test_target| {
+            const resolved_target = b.resolveTargetQuery(test_target.target);
+
+            if (options.skip_non_native and !isNative(&resolved_target, &b.graph.host.result))
+                continue;
+
+            const target = &resolved_target.result;
+
+            if (options.skip_wasm and target.cpu.arch.isWasm()) continue;
+
+            if (options.skip_freebsd and target.os.tag == .freebsd) continue;
+            if (options.skip_netbsd and target.os.tag == .netbsd) continue;
+            if (options.skip_openbsd and target.os.tag == .openbsd) continue;
+            if (options.skip_windows and target.os.tag == .windows) continue;
+            if (options.skip_darwin and target.os.tag.isDarwin()) continue;
+            if (options.skip_linux and target.os.tag == .linux) continue;
+
+            if (options.skip_llvm and test_target.backend == .llvm) continue;
+
+            const target_str = b.fmt("{s}-{t}", .{
+                resolved_target.query.zigTriple(b.allocator) catch @panic("OOM"),
+                test_target.backend,
+            });
+
+            if (options.test_target_filters.len > 0) {
+                for (options.test_target_filters) |filter| {
+                    if (std.mem.find(u8, target_str, filter) != null) break;
+                } else continue;
+            }
+
+            const run = b.addRunArtifact(runner);
+            run.setName(@"test".name);
+            run.enableProtocolMode();
+
+            switch (@"test".kind) {
+                else => continue,
+                .file => run.addFileArg(test_path),
+                .directory => run.addDirectoryArg(test_path),
+            }
+            run.addPrefixedFileArg("--zig=", .zig_exe);
+            run.addPrefixedDirectoryArg("--lib=", .zig_lib);
+            _ = run.addPrefixedOutputDirectoryArg("--src=", "src");
+            run.addArgs(&.{ "--target", target_str });
+
+            run.addArg("--quiet"); // don't fill stderr telling us about skipped tests etc
+
+            run.addThirdPartyEnabledArgDarling(.{ .enabled = "-fdarling" });
+            run.addThirdPartyEnabledArgQemu(.{ .enabled = "-fqemu" });
+            run.addThirdPartyEnabledArgRosetta(.{ .enabled = "-frosetta" });
+            run.addThirdPartyEnabledArgWasmtime(.{ .enabled = "-fwasmtime" });
+            run.addThirdPartyEnabledArgWine(.{ .enabled = "-fwine" });
+
+            tests_step.dependOn(&run.step);
+        }
+    }
+
+    return tests_step;
+}
+
+fn isEditorFileName(name: []const u8) bool {
+    return (std.mem.startsWith(u8, name, "#") and std.mem.endsWith(u8, name, "#")) or
+        std.mem.endsWith(u8, name, "~") or std.mem.endsWith(u8, name, ".swp");
 }
 
 pub fn addLlvmIrTests(b: *std.Build, options: LlvmIrContext.Options) ?*Step {

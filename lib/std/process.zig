@@ -390,6 +390,8 @@ pub const SpawnOptions = struct {
     stdin: StdIo = .inherit,
     stdout: StdIo = .inherit,
     stderr: StdIo = .inherit,
+    inherit_dirs: []const Dir = &.{},
+    inherit_files: []const File = &.{},
 
     /// Set to true to obtain rusage information for the child process.
     /// Depending on the target platform and implementation status, the

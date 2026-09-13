@@ -768,9 +768,8 @@ pub fn addRunArtifact(b: *Build, exe: *Step.Compile) *Step.Run {
 
     const run_step = Step.Run.create(b, step_name);
     run_step.producer = exe;
+    run_step.addArtifactArg(exe);
     if (exe.kind == .@"test") {
-        run_step.addArtifactArg(exe);
-
         const test_server_mode: bool = s: {
             if (exe.test_runner) |r| break :s r.mode == .server;
             if (exe.use_llvm == false) {
@@ -802,8 +801,6 @@ pub fn addRunArtifact(b: *Build, exe: *Step.Compile) *Step.Run {
             // communicate failure via its exit code.
             run_step.expectExitCode(0);
         }
-    } else {
-        run_step.addArtifactArg(exe);
     }
 
     return run_step;
