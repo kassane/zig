@@ -3456,6 +3456,19 @@ pub fn addNewIncrementalTests(
             .directory => {},
         }
 
+        const run = b.addRunArtifact(runner);
+        run.setName(@"test".name);
+        run.enableProtocolMode();
+
+        switch (@"test".kind) {
+            else => continue,
+            .file => run.addFileArg(test_path),
+            .directory => run.addDirectoryArg(test_path),
+        }
+        run.addPrefixedFileArg("--zig=", .zig_exe);
+        run.addPrefixedDirectoryArg("--lib=", .zig_lib);
+        _ = run.addPrefixedOutputDirectoryArg("--src=", "src");
+
         for (incremental_targets) |test_target| {
             const resolved_target = b.resolveTargetQuery(test_target.target);
 
@@ -3486,30 +3499,16 @@ pub fn addNewIncrementalTests(
                 } else continue;
             }
 
-            const run = b.addRunArtifact(runner);
-            run.setName(@"test".name);
-            run.enableProtocolMode();
-
-            switch (@"test".kind) {
-                else => continue,
-                .file => run.addFileArg(test_path),
-                .directory => run.addDirectoryArg(test_path),
-            }
-            run.addPrefixedFileArg("--zig=", .zig_exe);
-            run.addPrefixedDirectoryArg("--lib=", .zig_lib);
-            _ = run.addPrefixedOutputDirectoryArg("--src=", "src");
             run.addArgs(&.{ "--target", target_str });
-
-            run.addArg("--quiet"); // don't fill stderr telling us about skipped tests etc
-
-            run.addThirdPartyEnabledArgDarling(.{ .enabled = "-fdarling" });
-            run.addThirdPartyEnabledArgQemu(.{ .enabled = "-fqemu" });
-            run.addThirdPartyEnabledArgRosetta(.{ .enabled = "-frosetta" });
-            run.addThirdPartyEnabledArgWasmtime(.{ .enabled = "-fwasmtime" });
-            run.addThirdPartyEnabledArgWine(.{ .enabled = "-fwine" });
-
-            tests_step.dependOn(&run.step);
         }
+
+        run.addThirdPartyEnabledArgDarling(.{ .enabled = "-fdarling" });
+        run.addThirdPartyEnabledArgQemu(.{ .enabled = "-fqemu" });
+        run.addThirdPartyEnabledArgRosetta(.{ .enabled = "-frosetta" });
+        run.addThirdPartyEnabledArgWasmtime(.{ .enabled = "-fwasmtime" });
+        run.addThirdPartyEnabledArgWine(.{ .enabled = "-fwine" });
+
+        tests_step.dependOn(&run.step);
     }
 
     return tests_step;
