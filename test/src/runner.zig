@@ -8,8 +8,24 @@ const Args = struct {
     zig_file: ?std.Io.File,
     lib_dir: ?std.Io.Dir,
     src_dir: ?std.Io.Dir,
+    targets: std.ArrayList(u32),
+    target_bytes: std.ArrayList(u8),
+
+    fn deinit(args: *Args, gpa: std.mem.Allocator) void {
+        args.targets.deinit(gpa);
+        args.target_bytes.deinit(gpa);
+    }
+
+    fn addTarget(args: *Args, gpa: std.mem.Allocator, target: []const u8) std.mem.Allocator.Error!void {
+        try args.target_bytes.ensureUnusedCapacity(gpa, target.len + 1);
+        try args.targets.append(gpa, @intCast(args.target_bytes.items.len));
+        args.target_bytes.appendSliceAssumeCapacity(target);
+        args.target_bytes.appendAssumeCapacity(0);
+    }
 };
 pub fn main(init: std.process.Init) !void {
+    const arena = init.arena.allocator();
+
     var stdin_buffer: [512]u8 = undefined;
     var stdout_buffer: [512]u8 = undefined;
     var stderr_buffer: [512]u8 = undefined;
@@ -20,14 +36,19 @@ pub fn main(init: std.process.Init) !void {
         .in = &stdin.interface,
         .out = &stdout.interface,
     };
-    try server.serveStringMessage(.zig_version, @import("builtin").zig_version_string);
+
     var args: Args = .{
         .@"test" = null,
         .manifest_file = null,
         .zig_file = null,
         .lib_dir = null,
         .src_dir = null,
+        .targets = .empty,
+        .target_bytes = .empty,
     };
+    defer args.deinit(init.gpa);
+
+    try server.serveStringMessage(.zig_version, @import("builtin").zig_version_string);
     while (true) {
         const hdr = try server.receiveMessage();
         switch (hdr.tag) {
@@ -35,13 +56,11 @@ pub fn main(init: std.process.Init) !void {
                 std.debug.print("unsupported message: {t}\n", .{hdr.tag});
                 std.process.exit(1);
             },
-            .exit => {
-                std.process.exit(0);
-            },
+            .exit => std.process.exit(0),
             .args => {
-                const args_body = try init.arena.allocator().alloc(u8, hdr.bytes_len);
+                const args_body = try arena.alloc(u8, hdr.bytes_len);
                 try server.in.readSliceAll(args_body);
-                var state: enum { positional, zig, lib, src } = .positional;
+                var state: enum { positional, zig, lib, src, target } = .positional;
                 var input_dir: std.zig.Server.Message.InputDir = .cwd;
                 var args_body_offset: usize = 0;
                 while (args_body.len - args_body_offset > 0) {
@@ -53,7 +72,18 @@ pub fn main(init: std.process.Init) !void {
                             const end = std.mem.findScalarPos(u8, args_body, args_body_offset, 0).?;
                             const string = args_body[args_body_offset..end];
                             args_body_offset = end + 1;
-                            _ = string;
+                            switch (state) {
+                                .positional => if (std.mem.eql(u8, string, "--target")) {
+                                    state = .target;
+                                    continue;
+                                } else if (std.mem.cutPrefix(u8, string, "--target=")) |target| {
+                                    try args.addTarget(init.gpa, target);
+                                },
+                                .zig => unreachable,
+                                .lib => unreachable,
+                                .src => unreachable,
+                                .target => try args.addTarget(init.gpa, string),
+                            }
                         },
                         .prefix => {
                             const end = std.mem.findScalarPos(u8, args_body, args_body_offset, 0).?;
@@ -109,6 +139,7 @@ pub fn main(init: std.process.Init) !void {
                                     std.debug.assert(args.src_dir == null);
                                     args.src_dir = dir;
                                 },
+                                .target => unreachable,
                             }
                         },
                         .input_file, .input_file_content, .output_file => {
@@ -129,22 +160,30 @@ pub fn main(init: std.process.Init) !void {
                                     std.debug.assert(args.zig_file == null);
                                     args.zig_file = file;
                                 },
-                                .lib, .src => unreachable,
+                                .lib => unreachable,
+                                .src => unreachable,
+                                .target => unreachable,
                             }
                         },
                     }
                     state = .positional;
                 }
             },
-            .query_test_metadata => try server.serveTestMetadata(.{
-                .names = &.{0},
-                .expected_panic_msgs = &.{0},
-                .string_bytes = "runner\x00",
-            }),
+            .query_test_metadata => {
+                const expected_panic_msgs = try arena.alloc(u32, args.targets.items.len);
+                @memset(expected_panic_msgs, 0);
+                try server.serveTestMetadata(.{
+                    .names = args.targets.items,
+                    .expected_panic_msgs = expected_panic_msgs,
+                    .string_bytes = args.target_bytes.items,
+                });
+            },
             .run_test => {
                 const test_index = try server.receiveBody_u32();
+                const target =
+                    std.mem.sliceTo(args.target_bytes.items[args.targets.items[test_index]..], 0);
                 try server.serveBodylessMessage(.test_started);
-                const test_result = runTest(init.io, &stderr.interface, &server, &args);
+                const test_result = runTest(init.io, &stderr.interface, &server, &args, target);
                 try stderr.flush();
                 try server.serveTestResults(.{
                     .index = test_index,
@@ -170,11 +209,13 @@ fn runTest(
     stderr: *std.Io.Writer,
     server: *std.zig.Server,
     args: *const Args,
-) anyerror!void {
+    target: []const u8,
+) !void {
     const manifest_file = args.manifest_file orelse return error.MissingManifestArg;
     const src_dir = args.src_dir orelse return error.MissingSrcDir;
     var manifest_buffer: [512]u8 = undefined;
     var manifest_fr = manifest_file.reader(io, &manifest_buffer);
+    var allow_skip = true;
     var skip_delimiter = false;
     var update_mtime = std.Io.Clock.real.now(io);
     var update_num: usize = 0;
@@ -188,7 +229,7 @@ fn runTest(
             continue;
         }
         const cmd = std.meta.stringToEnum(
-            enum { obj, exe, lib, write, delete, update, check },
+            enum { skip, obj, exe, lib, write, delete, update, check },
             cmd_str,
         ) orelse return error.UnknownCommand;
         var maybe_arg = line_it.next();
@@ -198,38 +239,40 @@ fn runTest(
             dr: DelimitedReader,
             fr: std.Io.File.Reader,
         } = undefined;
-        const contents_r: *std.Io.Reader = contents_r: {
-            switch (cmd) {
-                else => {},
-                .delete => break :contents_r .ending,
-            }
+        const contents_r: *std.Io.Reader = contents_r: switch (cmd) {
+            .skip, .delete => {
+                if (line_it.next()) |_| return error.UnexpectedArg;
+                break :contents_r .ending;
+            },
+            else => {
+                const contents_path = contents_path: {
+                    const line_rest = line_it.rest();
+                    if (line_rest.len > 0) break :contents_path line_rest;
+                    const contents_path = maybe_arg orelse break :contents_r .ending;
+                    maybe_arg = null;
+                    break :contents_path contents_path;
+                };
+                if (std.mem.eql(u8, contents_path, "{")) {
+                    contents_impl = .{ .dr = .init(&manifest_fr.interface, "#}", &.{}) };
+                    skip_delimiter = true;
+                    break :contents_r &contents_impl.dr.interface;
+                }
 
-            const contents_path = contents_path: {
-                const line_rest = line_it.rest();
-                if (line_rest.len > 0) break :contents_path line_rest;
-                const contents_path = maybe_arg orelse break :contents_r .ending;
-                maybe_arg = null;
-                break :contents_path contents_path;
-            };
-            if (std.mem.eql(u8, contents_path, "{")) {
-                contents_impl = .{ .dr = .init(&manifest_fr.interface, "#}", &.{}) };
-                skip_delimiter = true;
-                break :contents_r &contents_impl.dr.interface;
-            }
+                const @"test" = args.@"test" orelse return error.ContentsFileInFileTest;
+                try server.serveMessageHeader(.{
+                    .tag = .discovered_inputs,
+                    .bytes_len = @intCast(@sizeOf(std.zig.Server.Message.InputDir) +
+                        contents_path.len + 1),
+                });
+                try server.out.writeInt(u32, @backingInt(@"test".input_dir), .little);
+                try server.out.writeAll(contents_path);
+                try server.out.writeByte(0);
+                try server.out.flush();
 
-            const @"test" = args.@"test" orelse return error.ContentsFileInFileTest;
-            try server.serveMessageHeader(.{
-                .tag = .discovered_inputs,
-                .bytes_len = @intCast(@sizeOf(std.zig.Server.Message.InputDir) + contents_path.len + 1),
-            });
-            try server.out.writeInt(u32, @backingInt(@"test".input_dir), .little);
-            try server.out.writeAll(contents_path);
-            try server.out.writeByte(0);
-            try server.out.flush();
-
-            contents_file = try @"test".dir.openFile(io, contents_path, .{});
-            contents_impl = .{ .fr = contents_file.?.reader(io, &.{}) };
-            break :contents_r &contents_impl.fr.interface;
+                contents_file = try @"test".dir.openFile(io, contents_path, .{});
+                contents_impl = .{ .fr = contents_file.?.reader(io, &.{}) };
+                break :contents_r &contents_impl.fr.interface;
+            },
         };
         switch (cmd) {
             else => {
@@ -237,6 +280,10 @@ fn runTest(
                 _ = try contents_r.streamRemaining(stderr);
                 try stderr.writeAll("\n}\n");
             },
+            .skip => if (!allow_skip)
+                return error.NonInitialSkipCommand // #skip must appear first
+            else if (std.mem.eql(u8, target, maybe_arg orelse return error.MissingArg))
+                return error.SkipZigTest,
             .write => {
                 const file = try src_dir.createFile(io, maybe_arg orelse return error.MissingArg, .{});
                 defer file.close(io);
@@ -262,6 +309,7 @@ fn runTest(
             },
         }
         std.debug.assert(try contents_r.discardRemaining() == 0);
+        if (cmd != .skip) allow_skip = false;
     } else |err| switch (err) {
         else => |e| return e,
         error.EndOfStream => if (skip_delimiter) return error.MissingDelimiter,

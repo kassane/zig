@@ -5,6 +5,8 @@ pub fn main(init: std.process.Init) !void {
     var test_path_arg: ?[]const u8 = null;
     var zig_path_arg: ?[]const u8 = null;
     var lib_path_arg: ?[]const u8 = null;
+    var target_args: std.ArrayList([]const u8) = .empty;
+    defer target_args.deinit(init.gpa);
     var keep_src = false;
 
     var arg_it = try init.minimal.args.iterateAllocator(arena);
@@ -18,6 +20,13 @@ pub fn main(init: std.process.Init) !void {
             lib_path_arg = arg_it.next() orelse fail("missing arg after '{s}'", .{arg});
         } else if (std.mem.cutPrefix(u8, arg, "--lib=")) |lib_path| {
             lib_path_arg = lib_path;
+        } else if (std.mem.eql(u8, arg, "--target")) {
+            try target_args.append(
+                init.gpa,
+                try arena.dupe(u8, arg_it.next() orelse fail("missing arg after '{s}'", .{arg})),
+            );
+        } else if (std.mem.cutPrefix(u8, arg, "--target=")) |target| {
+            try target_args.append(init.gpa, try arena.dupe(u8, target));
         } else if (std.mem.eql(u8, arg, "--keep-src")) {
             keep_src = true;
         } else {
@@ -72,45 +81,47 @@ pub fn main(init: std.process.Init) !void {
         .out = &stdin_writer.interface,
     };
     {
+        var args: std.ArrayList(u8) = .empty;
+        defer args.deinit(init.gpa);
         const Arg = std.zig.Client.Message.Arg;
-        var args: std.ArrayList(u8) = .initBuffer(try arena.alloc(u8, 0 +
-            @sizeOf(Arg) + @sizeOf(std.Io.File.Handle) +
-            @sizeOf(Arg) + "--zig=\x00".len +
-            @sizeOf(Arg) + @sizeOf(std.Io.File.Handle) +
-            @sizeOf(Arg) + "--lib=\x00".len +
-            @sizeOf(Arg) + @sizeOf(std.Io.Dir.Handle) +
-            @sizeOf(Arg) + "--src=\x00".len +
-            @sizeOf(Arg) + @sizeOf(std.Io.Dir.Handle)));
 
-        args.appendAssumeCapacity(@backingInt(@as(Arg, switch ((try test_file.stat(init.io)).kind) {
+        try args.append(init.gpa, @backingInt(@as(Arg, switch ((try test_file.stat(init.io)).kind) {
             else => unreachable,
             .file => .input_file,
             .directory => .input_dir,
         })));
-        args.appendSliceAssumeCapacity(@ptrCast(&test_file.handle));
+        try args.appendSlice(init.gpa, @ptrCast(&test_file.handle));
 
-        args.appendAssumeCapacity(@backingInt(Arg.prefix));
-        args.appendSliceAssumeCapacity("--zig=");
-        args.appendAssumeCapacity(0);
+        try args.append(init.gpa, @backingInt(Arg.prefix));
+        try args.appendSlice(init.gpa, "--zig=");
+        try args.append(init.gpa, 0);
 
-        args.appendAssumeCapacity(@backingInt(Arg.input_file));
-        args.appendSliceAssumeCapacity(@ptrCast(&zig_file.handle));
+        try args.append(init.gpa, @backingInt(Arg.input_file));
+        try args.appendSlice(init.gpa, @ptrCast(&zig_file.handle));
 
-        args.appendAssumeCapacity(@backingInt(Arg.prefix));
-        args.appendSliceAssumeCapacity("--lib=");
-        args.appendAssumeCapacity(0);
+        try args.append(init.gpa, @backingInt(Arg.prefix));
+        try args.appendSlice(init.gpa, "--lib=");
+        try args.append(init.gpa, 0);
 
-        args.appendAssumeCapacity(@backingInt(Arg.input_dir));
-        args.appendSliceAssumeCapacity(@ptrCast(&lib_dir.handle));
+        try args.append(init.gpa, @backingInt(Arg.input_dir));
+        try args.appendSlice(init.gpa, @ptrCast(&lib_dir.handle));
 
-        args.appendAssumeCapacity(@backingInt(Arg.prefix));
-        args.appendSliceAssumeCapacity("--src=");
-        args.appendAssumeCapacity(0);
+        try args.append(init.gpa, @backingInt(Arg.prefix));
+        try args.appendSlice(init.gpa, "--src=");
+        try args.append(init.gpa, 0);
 
-        args.appendAssumeCapacity(@backingInt(Arg.output_dir));
-        args.appendSliceAssumeCapacity(@ptrCast(&src_dir.handle));
+        try args.append(init.gpa, @backingInt(Arg.output_dir));
+        try args.appendSlice(init.gpa, @ptrCast(&src_dir.handle));
 
-        std.debug.assert(args.unusedCapacitySlice().len == 0);
+        for (target_args.items) |target_arg| {
+            try args.append(init.gpa, @backingInt(Arg.string));
+            try args.appendSlice(init.gpa, "--target");
+            try args.append(init.gpa, 0);
+
+            try args.append(init.gpa, @backingInt(Arg.string));
+            try args.appendSlice(init.gpa, target_arg);
+            try args.append(init.gpa, 0);
+        }
 
         try client.serveMessageHeader(.{
             .tag = .args,
@@ -118,6 +129,16 @@ pub fn main(init: std.process.Init) !void {
         });
         try client.out.writeAll(args.items);
 
+        var metadata: struct {
+            index: u32,
+            len: u32,
+
+            fn next(m: *@This()) ?u32 {
+                if (m.len - m.index == 0) return null;
+                defer m.index += 1;
+                return m.index;
+            }
+        } = .{ .index = 0, .len = 0 };
         try client.serveBodylessMessage(.query_test_metadata);
         while (true) {
             const hdr = try client.receiveMessage();
@@ -132,12 +153,17 @@ pub fn main(init: std.process.Init) !void {
                     );
                 },
                 .test_metadata => {
-                    try client.in.discardAll(hdr.bytes_len);
-                    try client.serveRunTest(0);
+                    const tm_hdr =
+                        try client.in.takeStruct(std.zig.Server.Message.TestMetadata, .little);
+                    try client.in.discardAll(
+                        hdr.bytes_len - @sizeOf(std.zig.Server.Message.TestMetadata),
+                    );
+                    metadata = .{ .index = 0, .len = tm_hdr.tests_len };
+                    try client.serveRunTest(metadata.next() orelse break);
                 },
                 .test_results => {
                     try client.in.discardAll(hdr.bytes_len);
-                    break;
+                    try client.serveRunTest(metadata.next() orelse break);
                 },
             }
         }
