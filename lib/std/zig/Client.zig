@@ -60,6 +60,7 @@ pub const Message = struct {
         start_fuzzing,
         /// The message body has the same format as in Server.
         new_fuzz_input,
+        /// Body is a sequence of Arg
         args,
 
         /// Asks the server to run a list of steps.
@@ -72,13 +73,13 @@ pub const Message = struct {
 
     pub const Arg = enum(u8) {
         /// Trailing:
-        /// * string: [:0]const u8,
+        /// * string: [:0]u8,
         string,
         /// Trailing:
-        /// * string: [:0]const u8,
+        /// * string: [:0]u8,
         prefix,
         /// Trailing:
-        /// * string: [:0]const u8,
+        /// * string: [:0]u8,
         suffix,
         /// Trailing:
         /// * handle: Handle,

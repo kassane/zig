@@ -207,6 +207,7 @@ pub fn make(
     var owned_files: std.bit_set.Dynamic = .{};
     var inherit_files: std.ArrayList(Io.File) = .empty;
     var protocol_args: std.ArrayList(u8) = .empty;
+    var input_dirs: std.ArrayList(Cache.Path) = .empty;
     defer {
         for (inherit_dirs.items, 0..) |inherit_dir, inherit_dir_index|
             if (owned_dirs.isSet(inherit_dir_index)) inherit_dir.close(io);
@@ -217,6 +218,7 @@ pub fn make(
         owned_files.deinit(gpa);
         inherit_files.deinit(gpa);
         protocol_args.deinit(gpa);
+        input_dirs.deinit(gpa);
     }
     switch (conf_run.flags.stdio) {
         .infer_from_args, .inherit, .check => {},
@@ -228,257 +230,264 @@ pub fn make(
             argv_list.appendAssumeCapacity(try arena.print("--seed=0x{x}", .{graph.random_seed}));
             argv_list.appendAssumeCapacity("--listen=-");
         },
-        .protocol => for (conf_run.args.slice[1..]) |arg_index| {
-            const arg = arg_index.get(conf);
-            switch (arg.flags.tag) {
-                .string => {
-                    const string = arg.prefix.value.?.slice(conf);
+        .protocol => {
+            try input_dirs.append(gpa, if (conf_run.cwd.value) |lazy_cwd|
+                try maker.resolveLazyPathIndex(arena, lazy_cwd, run_index)
+            else
+                .cwd());
+            for (conf_run.args.slice[1..]) |arg_index| {
+                const arg = arg_index.get(conf);
+                switch (arg.flags.tag) {
+                    .string => {
+                        const string = arg.prefix.value.?.slice(conf);
 
-                    man.hash.addBytesZ(string);
+                        man.hash.addBytesZ(string);
 
-                    try protocol_args.ensureUnusedCapacity(gpa, 1 + string.len + 1);
-                    protocol_args.appendAssumeCapacity(@backingInt(std.zig.Client.Message.Arg.string));
-                    protocol_args.appendSliceAssumeCapacity(string);
-                    protocol_args.appendAssumeCapacity(0);
-                },
-                .path_file => {
-                    const prefix = if (arg.prefix.value) |p| p.slice(conf) else "";
-                    const suffix = if (arg.suffix.value) |p| p.slice(conf) else "";
-                    const file_path = try maker.resolveLazyPathIndex(arena, arg.path.value.?, run_index);
-
-                    try owned_files.resize(gpa, owned_files.bit_length + 1, true);
-                    try inherit_files.ensureUnusedCapacity(gpa, 1);
-                    const file = file_path.root_dir.handle.openFile(io, file_path.sub_path, .{}) catch |err|
-                        return step.fail(maker, "unable to open input file {qf}: {t}", .{ file_path, err });
-                    inherit_files.appendAssumeCapacity(file);
-
-                    man.hash.addBytesZ(prefix);
-                    _ = try man.addInputPath(file_path, .{});
-                    man.hash.addBytesZ(suffix);
-
-                    try protocol_args.ensureUnusedCapacity(gpa, 1 + prefix.len + 1 +
-                        1 + @sizeOf(Io.File.Handle) +
-                        1 + suffix.len + 1);
-                    if (prefix.len > 0) {
-                        protocol_args.appendAssumeCapacity(@backingInt(std.zig.Client.Message.Arg.prefix));
-                        protocol_args.appendSliceAssumeCapacity(prefix);
-                        protocol_args.appendAssumeCapacity(0);
-                    }
-                    protocol_args.appendAssumeCapacity(@backingInt(std.zig.Client.Message.Arg.input_file));
-                    const file_handle: *align(1) Io.File.Handle =
-                        @ptrCast(protocol_args.addManyAsArrayAssumeCapacity(@sizeOf(Io.File.Handle)));
-                    file_handle.* = file.handle;
-                    if (suffix.len > 0) {
-                        protocol_args.appendAssumeCapacity(@backingInt(std.zig.Client.Message.Arg.suffix));
-                        protocol_args.appendSliceAssumeCapacity(prefix);
-                        protocol_args.appendAssumeCapacity(0);
-                    }
-                },
-                .path_directory => {
-                    const prefix = if (arg.prefix.value) |p| p.slice(conf) else "";
-                    const suffix = if (arg.suffix.value) |p| p.slice(conf) else "";
-                    const dir_path = try maker.resolveLazyPathIndex(arena, arg.path.value.?, run_index);
-
-                    const has_sub_path = dir_path.sub_path.len > 0;
-                    try owned_dirs.resize(gpa, owned_dirs.bit_length + 1, has_sub_path);
-                    try inherit_dirs.ensureUnusedCapacity(gpa, 1);
-                    const dir = if (has_sub_path)
-                        dir_path.root_dir.handle.openDir(io, dir_path.sub_path, .{
-                            .iterate = true,
-                        }) catch |err| return step.fail(maker, "unable to open input dir {qf}: {t}", .{ dir_path, err })
-                    else
-                        dir_path.root_dir.handle;
-                    inherit_dirs.appendAssumeCapacity(dir);
-
-                    man.hash.addBytesZ(prefix);
-                    man.hash.addOptionalBytes(dir_path.root_dir.path);
-                    man.hash.addBytes(dir_path.sub_path);
-                    man.hash.addBytesZ(suffix);
-
-                    try protocol_args.ensureUnusedCapacity(gpa, 1 + prefix.len + 1 +
-                        1 + @sizeOf(Io.Dir.Handle) +
-                        1 + suffix.len + 1);
-                    if (prefix.len > 0) {
-                        protocol_args.appendAssumeCapacity(@backingInt(std.zig.Client.Message.Arg.prefix));
-                        protocol_args.appendSliceAssumeCapacity(prefix);
-                        protocol_args.appendAssumeCapacity(0);
-                    }
-                    protocol_args.appendAssumeCapacity(@backingInt(std.zig.Client.Message.Arg.input_dir));
-                    const dir_handle: *align(1) Io.Dir.Handle =
-                        @ptrCast(protocol_args.addManyAsArrayAssumeCapacity(@sizeOf(Io.Dir.Handle)));
-                    dir_handle.* = dir.handle;
-                    if (suffix.len > 0) {
-                        protocol_args.appendAssumeCapacity(@backingInt(std.zig.Client.Message.Arg.suffix));
-                        protocol_args.appendSliceAssumeCapacity(prefix);
-                        protocol_args.appendAssumeCapacity(0);
-                    }
-                },
-                .file_content => {
-                    const prefix = if (arg.prefix.value) |p| p.slice(conf) else "";
-                    const suffix = if (arg.suffix.value) |p| p.slice(conf) else "";
-                    const file_path = try maker.resolveLazyPathIndex(arena, arg.path.value.?, run_index);
-
-                    try owned_files.resize(gpa, owned_files.bit_length + 1, true);
-                    try inherit_files.ensureUnusedCapacity(gpa, 1);
-                    const file = file_path.root_dir.handle.openFile(io, file_path.sub_path, .{}) catch |err|
-                        return step.fail(maker, "unable to open input file {qf}: {t}", .{ file_path, err });
-                    inherit_files.appendAssumeCapacity(file);
-
-                    man.hash.addBytesZ(prefix);
-                    _ = try man.addInputPath(file_path, .{});
-                    man.hash.addBytesZ(suffix);
-
-                    try protocol_args.ensureUnusedCapacity(gpa, 1 + prefix.len + 1 +
-                        1 + @sizeOf(Io.File.Handle) +
-                        1 + suffix.len + 1);
-                    if (prefix.len > 0) {
-                        protocol_args.appendAssumeCapacity(@backingInt(std.zig.Client.Message.Arg.prefix));
-                        protocol_args.appendSliceAssumeCapacity(prefix);
-                        protocol_args.appendAssumeCapacity(0);
-                    }
-                    protocol_args.appendAssumeCapacity(@backingInt(std.zig.Client.Message.Arg.input_file_content));
-                    const file_handle: *align(1) Io.File.Handle =
-                        @ptrCast(protocol_args.addManyAsArrayAssumeCapacity(@sizeOf(Io.File.Handle)));
-                    file_handle.* = file.handle;
-                    if (suffix.len > 0) {
-                        protocol_args.appendAssumeCapacity(@backingInt(std.zig.Client.Message.Arg.suffix));
-                        protocol_args.appendSliceAssumeCapacity(prefix);
-                        protocol_args.appendAssumeCapacity(0);
-                    }
-                },
-                .artifact => {
-                    const prefix = if (arg.prefix.value) |p| p.slice(conf) else "";
-                    const suffix = if (arg.suffix.value) |p| p.slice(conf) else "";
-                    const producer_index = arg.producer.value.?;
-                    const producer_step = producer_index.ptr(conf);
-                    const producer = producer_step.extended.get(conf.extra).compile;
-                    const producer_make_comp_step = maker.stepByIndex(producer_index);
-                    const producer_make_comp = &producer_make_comp_step.extended.compile;
-
-                    const file_path = producer_make_comp.installed_path orelse
-                        maker.generatedPath(producer.generated_bin.value.?);
-
-                    try owned_files.resize(gpa, owned_files.bit_length + 1, true);
-                    try inherit_files.ensureUnusedCapacity(gpa, 1);
-                    const file = file_path.root_dir.handle.openFile(io, file_path.sub_path, .{}) catch |err|
-                        return step.fail(maker, "unable to open input artifact {qf}: {t}", .{ file_path, err });
-                    inherit_files.appendAssumeCapacity(file);
-
-                    man.hash.addBytesZ(prefix);
-                    _ = try man.addInputPath(file_path, .{});
-                    man.hash.addBytesZ(suffix);
-
-                    try protocol_args.ensureUnusedCapacity(gpa, 1 + prefix.len + 1 +
-                        1 + @sizeOf(Io.File.Handle) +
-                        1 + suffix.len + 1);
-                    if (prefix.len > 0) {
-                        protocol_args.appendAssumeCapacity(@backingInt(std.zig.Client.Message.Arg.prefix));
-                        protocol_args.appendSliceAssumeCapacity(prefix);
-                        protocol_args.appendAssumeCapacity(0);
-                    }
-                    protocol_args.appendAssumeCapacity(@backingInt(std.zig.Client.Message.Arg.input_file));
-                    const file_handle: *align(1) Io.File.Handle =
-                        @ptrCast(protocol_args.addManyAsArrayAssumeCapacity(@sizeOf(Io.File.Handle)));
-                    file_handle.* = file.handle;
-                    if (suffix.len > 0) {
-                        protocol_args.appendAssumeCapacity(@backingInt(std.zig.Client.Message.Arg.suffix));
-                        protocol_args.appendSliceAssumeCapacity(prefix);
-                        protocol_args.appendAssumeCapacity(0);
-                    }
-                },
-                .output_file => {
-                    const prefix = if (arg.prefix.value) |p| p.slice(conf) else "";
-                    const suffix = if (arg.suffix.value) |p| p.slice(conf) else "";
-                    const basename = arg.basename.value.?.slice(conf);
-
-                    man.hash.addBytesZ(prefix);
-                    man.hash.addBytesZ(basename);
-                    man.hash.addBytesZ(suffix);
-                    assert(!arg.flags.dep_file);
-
-                    try protocol_args.ensureUnusedCapacity(gpa, 1 + prefix.len + 1 +
-                        1 + @sizeOf(Io.File.Handle) +
-                        1 + suffix.len + 1);
-                    if (prefix.len > 0) {
-                        protocol_args.appendAssumeCapacity(@backingInt(std.zig.Client.Message.Arg.prefix));
-                        protocol_args.appendSliceAssumeCapacity(prefix);
-                        protocol_args.appendAssumeCapacity(0);
-                    }
-                    protocol_args.appendAssumeCapacity(@backingInt(std.zig.Client.Message.Arg.output_file));
-
-                    // Add a placeholder into the argument list because we need the
-                    // manifest hash to be updated with all arguments before the
-                    // object directory is computed.
-                    try owned_files.resize(gpa, owned_files.bit_length + 1, false);
-                    try inherit_files.ensureUnusedCapacity(gpa, 1);
-                    try output_placeholders.append(gpa, .{
-                        .index = @intCast(inherit_files.items.len),
-                        .offset = @intCast(protocol_args.items.len),
-                        .arg_index = arg_index,
-                    });
-                    _ = inherit_files.addOneAssumeCapacity();
-
-                    _ = protocol_args.addManyAsArrayAssumeCapacity(@sizeOf(Io.File.Handle));
-                    if (suffix.len > 0) {
-                        protocol_args.appendAssumeCapacity(@backingInt(std.zig.Client.Message.Arg.suffix));
-                        protocol_args.appendSliceAssumeCapacity(prefix);
-                        protocol_args.appendAssumeCapacity(0);
-                    }
-                },
-                .output_directory => {
-                    const prefix = if (arg.prefix.value) |p| p.slice(conf) else "";
-                    const suffix = if (arg.suffix.value) |p| p.slice(conf) else "";
-                    const basename = arg.basename.value.?.slice(conf);
-
-                    man.hash.addBytesZ(prefix);
-                    man.hash.addBytesZ(basename);
-                    man.hash.addBytesZ(suffix);
-                    assert(!arg.flags.dep_file);
-
-                    try protocol_args.ensureUnusedCapacity(gpa, 1 + prefix.len + 1 +
-                        1 + @sizeOf(Io.Dir.Handle) +
-                        1 + suffix.len + 1);
-                    if (prefix.len > 0) {
-                        protocol_args.appendAssumeCapacity(@backingInt(std.zig.Client.Message.Arg.prefix));
-                        protocol_args.appendSliceAssumeCapacity(prefix);
-                        protocol_args.appendAssumeCapacity(0);
-                    }
-                    protocol_args.appendAssumeCapacity(@backingInt(std.zig.Client.Message.Arg.output_dir));
-
-                    // Add a placeholder into the argument list because we need the
-                    // manifest hash to be updated with all arguments before the
-                    // object directory is computed.
-                    try owned_dirs.resize(gpa, owned_dirs.bit_length + 1, false);
-                    try inherit_dirs.ensureUnusedCapacity(gpa, 1);
-                    try output_placeholders.append(gpa, .{
-                        .index = @intCast(inherit_dirs.items.len),
-                        .offset = @intCast(protocol_args.items.len),
-                        .arg_index = arg_index,
-                    });
-                    _ = inherit_dirs.addOneAssumeCapacity();
-
-                    _ = protocol_args.addManyAsArrayAssumeCapacity(@sizeOf(Io.Dir.Handle));
-                    if (suffix.len > 0) {
-                        protocol_args.appendAssumeCapacity(@backingInt(std.zig.Client.Message.Arg.suffix));
-                        protocol_args.appendSliceAssumeCapacity(prefix);
-                        protocol_args.appendAssumeCapacity(0);
-                    }
-                },
-                .passthru => if (maker.run_args) |run_args| {
-                    man.hash.addListOfBytes(run_args);
-
-                    for (run_args) |run_arg| {
-                        try protocol_args.ensureUnusedCapacity(gpa, 1 + run_arg.len + 1);
+                        try protocol_args.ensureUnusedCapacity(gpa, 1 + string.len + 1);
                         protocol_args.appendAssumeCapacity(@backingInt(std.zig.Client.Message.Arg.string));
-                        protocol_args.appendSliceAssumeCapacity(run_arg);
+                        protocol_args.appendSliceAssumeCapacity(string);
                         protocol_args.appendAssumeCapacity(0);
-                    }
-                },
-                .enable_darling => try thirdPartyToggleProtocol(gpa, &man.hash, &protocol_args, conf, graph.enable_darling, arg.prefix.value, arg.suffix.value),
-                .enable_qemu => try thirdPartyToggleProtocol(gpa, &man.hash, &protocol_args, conf, graph.enable_qemu, arg.prefix.value, arg.suffix.value),
-                .enable_rosetta => try thirdPartyToggleProtocol(gpa, &man.hash, &protocol_args, conf, graph.enable_rosetta, arg.prefix.value, arg.suffix.value),
-                .enable_wasmtime => try thirdPartyToggleProtocol(gpa, &man.hash, &protocol_args, conf, graph.enable_wasmtime, arg.prefix.value, arg.suffix.value),
-                .enable_wine => try thirdPartyToggleProtocol(gpa, &man.hash, &protocol_args, conf, graph.enable_wine, arg.prefix.value, arg.suffix.value),
+                    },
+                    .path_file => {
+                        const prefix = if (arg.prefix.value) |p| p.slice(conf) else "";
+                        const suffix = if (arg.suffix.value) |p| p.slice(conf) else "";
+                        const file_path = try maker.resolveLazyPathIndex(arena, arg.path.value.?, run_index);
+
+                        try owned_files.resize(gpa, owned_files.bit_length + 1, true);
+                        try inherit_files.ensureUnusedCapacity(gpa, 1);
+                        const file = file_path.root_dir.handle.openFile(io, file_path.sub_path, .{}) catch |err|
+                            return step.fail(maker, "unable to open input file {qf}: {t}", .{ file_path, err });
+                        inherit_files.appendAssumeCapacity(file);
+
+                        man.hash.addBytesZ(prefix);
+                        _ = try man.addInputPath(file_path, .{});
+                        man.hash.addBytesZ(suffix);
+
+                        try protocol_args.ensureUnusedCapacity(gpa, 1 + prefix.len + 1 +
+                            1 + @sizeOf(Io.File.Handle) +
+                            1 + suffix.len + 1);
+                        if (prefix.len > 0) {
+                            protocol_args.appendAssumeCapacity(@backingInt(std.zig.Client.Message.Arg.prefix));
+                            protocol_args.appendSliceAssumeCapacity(prefix);
+                            protocol_args.appendAssumeCapacity(0);
+                        }
+                        protocol_args.appendAssumeCapacity(@backingInt(std.zig.Client.Message.Arg.input_file));
+                        const file_handle: *align(1) Io.File.Handle =
+                            @ptrCast(protocol_args.addManyAsArrayAssumeCapacity(@sizeOf(Io.File.Handle)));
+                        file_handle.* = file.handle;
+                        if (suffix.len > 0) {
+                            protocol_args.appendAssumeCapacity(@backingInt(std.zig.Client.Message.Arg.suffix));
+                            protocol_args.appendSliceAssumeCapacity(prefix);
+                            protocol_args.appendAssumeCapacity(0);
+                        }
+                    },
+                    .path_directory => {
+                        const prefix = if (arg.prefix.value) |p| p.slice(conf) else "";
+                        const suffix = if (arg.suffix.value) |p| p.slice(conf) else "";
+                        const dir_path = try maker.resolveLazyPathIndex(arena, arg.path.value.?, run_index);
+                        try input_dirs.append(gpa, dir_path);
+
+                        const has_sub_path = dir_path.sub_path.len > 0;
+                        try owned_dirs.resize(gpa, owned_dirs.bit_length + 1, has_sub_path);
+                        try inherit_dirs.ensureUnusedCapacity(gpa, 1);
+                        const dir = if (has_sub_path)
+                            dir_path.root_dir.handle.openDir(io, dir_path.sub_path, .{
+                                .iterate = true,
+                            }) catch |err| return step.fail(maker, "unable to open input dir {qf}: {t}", .{ dir_path, err })
+                        else
+                            dir_path.root_dir.handle;
+                        inherit_dirs.appendAssumeCapacity(dir);
+
+                        man.hash.addBytesZ(prefix);
+                        man.hash.addOptionalBytes(dir_path.root_dir.path);
+                        man.hash.addBytes(dir_path.sub_path);
+                        man.hash.addBytesZ(suffix);
+
+                        try protocol_args.ensureUnusedCapacity(gpa, 1 + prefix.len + 1 +
+                            1 + @sizeOf(Io.Dir.Handle) +
+                            1 + suffix.len + 1);
+                        if (prefix.len > 0) {
+                            protocol_args.appendAssumeCapacity(@backingInt(std.zig.Client.Message.Arg.prefix));
+                            protocol_args.appendSliceAssumeCapacity(prefix);
+                            protocol_args.appendAssumeCapacity(0);
+                        }
+                        protocol_args.appendAssumeCapacity(@backingInt(std.zig.Client.Message.Arg.input_dir));
+                        const dir_handle: *align(1) Io.Dir.Handle =
+                            @ptrCast(protocol_args.addManyAsArrayAssumeCapacity(@sizeOf(Io.Dir.Handle)));
+                        dir_handle.* = dir.handle;
+                        if (suffix.len > 0) {
+                            protocol_args.appendAssumeCapacity(@backingInt(std.zig.Client.Message.Arg.suffix));
+                            protocol_args.appendSliceAssumeCapacity(prefix);
+                            protocol_args.appendAssumeCapacity(0);
+                        }
+                    },
+                    .file_content => {
+                        const prefix = if (arg.prefix.value) |p| p.slice(conf) else "";
+                        const suffix = if (arg.suffix.value) |p| p.slice(conf) else "";
+                        const file_path = try maker.resolveLazyPathIndex(arena, arg.path.value.?, run_index);
+
+                        try owned_files.resize(gpa, owned_files.bit_length + 1, true);
+                        try inherit_files.ensureUnusedCapacity(gpa, 1);
+                        const file = file_path.root_dir.handle.openFile(io, file_path.sub_path, .{}) catch |err|
+                            return step.fail(maker, "unable to open input file {qf}: {t}", .{ file_path, err });
+                        inherit_files.appendAssumeCapacity(file);
+
+                        man.hash.addBytesZ(prefix);
+                        _ = try man.addInputPath(file_path, .{});
+                        man.hash.addBytesZ(suffix);
+
+                        try protocol_args.ensureUnusedCapacity(gpa, 1 + prefix.len + 1 +
+                            1 + @sizeOf(Io.File.Handle) +
+                            1 + suffix.len + 1);
+                        if (prefix.len > 0) {
+                            protocol_args.appendAssumeCapacity(@backingInt(std.zig.Client.Message.Arg.prefix));
+                            protocol_args.appendSliceAssumeCapacity(prefix);
+                            protocol_args.appendAssumeCapacity(0);
+                        }
+                        protocol_args.appendAssumeCapacity(@backingInt(std.zig.Client.Message.Arg.input_file_content));
+                        const file_handle: *align(1) Io.File.Handle =
+                            @ptrCast(protocol_args.addManyAsArrayAssumeCapacity(@sizeOf(Io.File.Handle)));
+                        file_handle.* = file.handle;
+                        if (suffix.len > 0) {
+                            protocol_args.appendAssumeCapacity(@backingInt(std.zig.Client.Message.Arg.suffix));
+                            protocol_args.appendSliceAssumeCapacity(prefix);
+                            protocol_args.appendAssumeCapacity(0);
+                        }
+                    },
+                    .artifact => {
+                        const prefix = if (arg.prefix.value) |p| p.slice(conf) else "";
+                        const suffix = if (arg.suffix.value) |p| p.slice(conf) else "";
+                        const producer_index = arg.producer.value.?;
+                        const producer_step = producer_index.ptr(conf);
+                        const producer = producer_step.extended.get(conf.extra).compile;
+                        const producer_make_comp_step = maker.stepByIndex(producer_index);
+                        const producer_make_comp = &producer_make_comp_step.extended.compile;
+
+                        const file_path = producer_make_comp.installed_path orelse
+                            maker.generatedPath(producer.generated_bin.value.?);
+
+                        try owned_files.resize(gpa, owned_files.bit_length + 1, true);
+                        try inherit_files.ensureUnusedCapacity(gpa, 1);
+                        const file = file_path.root_dir.handle.openFile(io, file_path.sub_path, .{}) catch |err|
+                            return step.fail(maker, "unable to open input artifact {qf}: {t}", .{ file_path, err });
+                        inherit_files.appendAssumeCapacity(file);
+
+                        man.hash.addBytesZ(prefix);
+                        _ = try man.addInputPath(file_path, .{});
+                        man.hash.addBytesZ(suffix);
+
+                        try protocol_args.ensureUnusedCapacity(gpa, 1 + prefix.len + 1 +
+                            1 + @sizeOf(Io.File.Handle) +
+                            1 + suffix.len + 1);
+                        if (prefix.len > 0) {
+                            protocol_args.appendAssumeCapacity(@backingInt(std.zig.Client.Message.Arg.prefix));
+                            protocol_args.appendSliceAssumeCapacity(prefix);
+                            protocol_args.appendAssumeCapacity(0);
+                        }
+                        protocol_args.appendAssumeCapacity(@backingInt(std.zig.Client.Message.Arg.input_file));
+                        const file_handle: *align(1) Io.File.Handle =
+                            @ptrCast(protocol_args.addManyAsArrayAssumeCapacity(@sizeOf(Io.File.Handle)));
+                        file_handle.* = file.handle;
+                        if (suffix.len > 0) {
+                            protocol_args.appendAssumeCapacity(@backingInt(std.zig.Client.Message.Arg.suffix));
+                            protocol_args.appendSliceAssumeCapacity(prefix);
+                            protocol_args.appendAssumeCapacity(0);
+                        }
+                    },
+                    .output_file => {
+                        const prefix = if (arg.prefix.value) |p| p.slice(conf) else "";
+                        const suffix = if (arg.suffix.value) |p| p.slice(conf) else "";
+                        const basename = arg.basename.value.?.slice(conf);
+
+                        man.hash.addBytesZ(prefix);
+                        man.hash.addBytesZ(basename);
+                        man.hash.addBytesZ(suffix);
+                        assert(!arg.flags.dep_file);
+
+                        try protocol_args.ensureUnusedCapacity(gpa, 1 + prefix.len + 1 +
+                            1 + @sizeOf(Io.File.Handle) +
+                            1 + suffix.len + 1);
+                        if (prefix.len > 0) {
+                            protocol_args.appendAssumeCapacity(@backingInt(std.zig.Client.Message.Arg.prefix));
+                            protocol_args.appendSliceAssumeCapacity(prefix);
+                            protocol_args.appendAssumeCapacity(0);
+                        }
+                        protocol_args.appendAssumeCapacity(@backingInt(std.zig.Client.Message.Arg.output_file));
+
+                        // Add a placeholder into the argument list because we need the
+                        // manifest hash to be updated with all arguments before the
+                        // object directory is computed.
+                        try owned_files.resize(gpa, owned_files.bit_length + 1, false);
+                        try inherit_files.ensureUnusedCapacity(gpa, 1);
+                        try output_placeholders.append(gpa, .{
+                            .index = @intCast(inherit_files.items.len),
+                            .offset = @intCast(protocol_args.items.len),
+                            .arg_index = arg_index,
+                        });
+                        _ = inherit_files.addOneAssumeCapacity();
+
+                        _ = protocol_args.addManyAsArrayAssumeCapacity(@sizeOf(Io.File.Handle));
+                        if (suffix.len > 0) {
+                            protocol_args.appendAssumeCapacity(@backingInt(std.zig.Client.Message.Arg.suffix));
+                            protocol_args.appendSliceAssumeCapacity(prefix);
+                            protocol_args.appendAssumeCapacity(0);
+                        }
+                    },
+                    .output_directory => {
+                        const prefix = if (arg.prefix.value) |p| p.slice(conf) else "";
+                        const suffix = if (arg.suffix.value) |p| p.slice(conf) else "";
+                        const basename = arg.basename.value.?.slice(conf);
+
+                        man.hash.addBytesZ(prefix);
+                        man.hash.addBytesZ(basename);
+                        man.hash.addBytesZ(suffix);
+                        assert(!arg.flags.dep_file);
+
+                        try protocol_args.ensureUnusedCapacity(gpa, 1 + prefix.len + 1 +
+                            1 + @sizeOf(Io.Dir.Handle) +
+                            1 + suffix.len + 1);
+                        if (prefix.len > 0) {
+                            protocol_args.appendAssumeCapacity(@backingInt(std.zig.Client.Message.Arg.prefix));
+                            protocol_args.appendSliceAssumeCapacity(prefix);
+                            protocol_args.appendAssumeCapacity(0);
+                        }
+                        protocol_args.appendAssumeCapacity(@backingInt(std.zig.Client.Message.Arg.output_dir));
+
+                        // Add a placeholder into the argument list because we need the
+                        // manifest hash to be updated with all arguments before the
+                        // object directory is computed.
+                        try owned_dirs.resize(gpa, owned_dirs.bit_length + 1, false);
+                        try inherit_dirs.ensureUnusedCapacity(gpa, 1);
+                        try output_placeholders.append(gpa, .{
+                            .index = @intCast(inherit_dirs.items.len),
+                            .offset = @intCast(protocol_args.items.len),
+                            .arg_index = arg_index,
+                        });
+                        _ = inherit_dirs.addOneAssumeCapacity();
+
+                        _ = protocol_args.addManyAsArrayAssumeCapacity(@sizeOf(Io.Dir.Handle));
+                        if (suffix.len > 0) {
+                            protocol_args.appendAssumeCapacity(@backingInt(std.zig.Client.Message.Arg.suffix));
+                            protocol_args.appendSliceAssumeCapacity(prefix);
+                            protocol_args.appendAssumeCapacity(0);
+                        }
+                    },
+                    .passthru => if (maker.run_args) |run_args| {
+                        man.hash.addListOfBytes(run_args);
+
+                        for (run_args) |run_arg| {
+                            try protocol_args.ensureUnusedCapacity(gpa, 1 + run_arg.len + 1);
+                            protocol_args.appendAssumeCapacity(@backingInt(std.zig.Client.Message.Arg.string));
+                            protocol_args.appendSliceAssumeCapacity(run_arg);
+                            protocol_args.appendAssumeCapacity(0);
+                        }
+                    },
+                    .enable_darling => try thirdPartyToggleProtocol(gpa, &man.hash, &protocol_args, conf, graph.enable_darling, arg.prefix.value, arg.suffix.value),
+                    .enable_qemu => try thirdPartyToggleProtocol(gpa, &man.hash, &protocol_args, conf, graph.enable_qemu, arg.prefix.value, arg.suffix.value),
+                    .enable_rosetta => try thirdPartyToggleProtocol(gpa, &man.hash, &protocol_args, conf, graph.enable_rosetta, arg.prefix.value, arg.suffix.value),
+                    .enable_wasmtime => try thirdPartyToggleProtocol(gpa, &man.hash, &protocol_args, conf, graph.enable_wasmtime, arg.prefix.value, arg.suffix.value),
+                    .enable_wine => try thirdPartyToggleProtocol(gpa, &man.hash, &protocol_args, conf, graph.enable_wine, arg.prefix.value, arg.suffix.value),
+                }
             }
         },
     }
@@ -561,7 +570,7 @@ pub fn make(
                 .args = protocol_args.items,
             } },
         });
-        try runCommand(arena, run, run_index, maker, progress_node, argv_list.items, inherit_dirs.items, inherit_files.items, protocol_args.items, has_side_effects, output_dir_path, null);
+        try runCommand(arena, run, run_index, maker, progress_node, argv_list.items, &.{}, &.{}, &.{}, &.{}, null, has_side_effects, output_dir_path, null);
         if (!has_side_effects) try step.finalizeManifestAndWatch(maker, &man);
         return;
     }
@@ -581,7 +590,22 @@ pub fn make(
             .args = protocol_args.items,
         } },
     });
-    try runCommand(arena, run, run_index, maker, progress_node, argv_list.items, inherit_dirs.items, inherit_files.items, protocol_args.items, has_side_effects, tmp_dir_path, null);
+    try runCommand(
+        arena,
+        run,
+        run_index,
+        maker,
+        progress_node,
+        argv_list.items,
+        inherit_dirs.items,
+        inherit_files.items,
+        protocol_args.items,
+        input_dirs.items,
+        &man,
+        has_side_effects,
+        tmp_dir_path,
+        null,
+    );
 
     for (output_placeholders.items) |placeholder| {
         const arg = placeholder.arg_index.get(conf);
@@ -720,6 +744,8 @@ fn waitZigTest(
     child: *process.Child,
     progress_node: std.Progress.Node,
     protocol_args: []const u8,
+    input_dirs: []const Cache.Path,
+    man: ?*Cache.Manifest,
     multi_reader: *Io.File.MultiReader,
     opt_metadata: *?TestMetadata,
     results: *Step.TestResults,
@@ -899,6 +925,16 @@ fn waitZigTest(
                 last_update = now;
 
                 requestNextTest(&client, md, &sub_prog_node) catch |err| return .{ .write_failed = err };
+            },
+            .discovered_inputs => while (body_r.takeEnum(
+                std.zig.Server.Message.InputDir,
+                .little,
+            )) |input_dir| try man.?.addDiscoveredPath(.{ .discovered_path = .{
+                .unresolved = try input_dirs[@backingInt(input_dir)]
+                    .join(arena, try body_r.takeSentinel(0)),
+            } }) else |err| switch (err) {
+                else => |e| return e,
+                error.EndOfStream => {},
             },
         }
     }
@@ -1463,6 +1499,8 @@ fn evalZigTest(
     progress_node: std.Progress.Node,
     spawn_options: process.SpawnOptions,
     protocol_args: []const u8,
+    input_dirs: []const Cache.Path,
+    man: ?*Cache.Manifest,
     fuzz_context: ?FuzzContext,
 ) !void {
     if (fuzz_context != null) {
@@ -1512,6 +1550,8 @@ fn evalZigTest(
             &child,
             progress_node,
             protocol_args,
+            input_dirs,
+            man,
             &multi_reader,
             &test_metadata,
             &test_results,
@@ -1932,7 +1972,7 @@ pub fn rerunInFuzzMode(
     var rand_int: u64 = undefined;
     io.random(@ptrCast(&rand_int));
     const tmp_dir_path = "tmp" ++ Dir.path.sep_str ++ std.fmt.hex(rand_int);
-    try runCommand(arena, run, run_index, maker, prog_node, argv_list.items, &.{}, &.{}, &.{}, has_side_effects, tmp_dir_path, .{
+    try runCommand(arena, run, run_index, maker, prog_node, argv_list.items, &.{}, &.{}, &.{}, &.{}, null, has_side_effects, tmp_dir_path, .{
         .fuzz = fuzz,
     });
 }
@@ -2084,6 +2124,8 @@ fn runCommand(
     inherit_dirs: []const Io.Dir,
     inherit_files: []const Io.File,
     protocol_args: []const u8,
+    input_dirs: []const Cache.Path,
+    man: ?*Cache.Manifest,
     has_side_effects: bool,
     output_dir_path: []const u8,
     fuzz_context: ?FuzzContext,
@@ -2153,6 +2195,8 @@ fn runCommand(
         inherit_dirs,
         inherit_files,
         protocol_args,
+        input_dirs,
+        man,
         has_side_effects,
         fuzz_context,
     ) catch |err| term: {
@@ -2308,6 +2352,8 @@ fn runCommand(
                     inherit_dirs,
                     inherit_files,
                     protocol_args,
+                    input_dirs,
+                    man,
                     has_side_effects,
                     fuzz_context,
                 ) catch |e| {
@@ -2569,6 +2615,8 @@ fn spawnChildAndCollect(
     inherit_dirs: []const Io.Dir,
     inherit_files: []const Io.File,
     protocol_args: []const u8,
+    input_dirs: []const Cache.Path,
+    man: ?*Cache.Manifest,
     has_side_effects: bool,
     fuzz_context: ?FuzzContext,
 ) !?EvalGenericResult {
@@ -2675,7 +2723,17 @@ fn spawnChildAndCollect(
         .zig_test, .protocol => {
             try setColorEnvironmentVariables(&conf_run, environ_map, graph.stderr_mode.?);
             const started: Io.Clock.Timestamp = .now(io, .awake);
-            const result = evalZigTest(run, run_index, maker, progress_node, spawn_options, protocol_args, fuzz_context) catch |err| switch (err) {
+            const result = evalZigTest(
+                run,
+                run_index,
+                maker,
+                progress_node,
+                spawn_options,
+                protocol_args,
+                input_dirs,
+                man,
+                fuzz_context,
+            ) catch |err| switch (err) {
                 error.Canceled => |e| return e,
                 else => |e| e,
             };

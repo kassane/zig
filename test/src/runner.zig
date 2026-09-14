@@ -1,6 +1,9 @@
 const std = @import("std");
 const Args = struct {
-    test_dir: ?std.Io.Dir,
+    @"test": ?struct {
+        input_dir: std.zig.Server.Message.InputDir,
+        dir: std.Io.Dir,
+    },
     manifest_file: ?std.Io.File,
     zig_file: ?std.Io.File,
     lib_dir: ?std.Io.Dir,
@@ -19,7 +22,7 @@ pub fn main(init: std.process.Init) !void {
     };
     try server.serveStringMessage(.zig_version, @import("builtin").zig_version_string);
     var args: Args = .{
-        .test_dir = null,
+        .@"test" = null,
         .manifest_file = null,
         .zig_file = null,
         .lib_dir = null,
@@ -39,12 +42,13 @@ pub fn main(init: std.process.Init) !void {
                 const args_body = try init.arena.allocator().alloc(u8, hdr.bytes_len);
                 try server.in.readSliceAll(args_body);
                 var state: enum { positional, zig, lib, src } = .positional;
+                var input_dir: std.zig.Server.Message.InputDir = .cwd;
                 var args_body_offset: usize = 0;
                 while (args_body.len - args_body_offset > 0) {
                     const arg: std.zig.Client.Message.Arg =
                         @fromBackingInt(args_body[args_body_offset]);
                     args_body_offset += 1;
-                    switch (arg) {
+                    arg: switch (arg) {
                         .string => {
                             const end = std.mem.findScalarPos(u8, args_body, args_body_offset, 0).?;
                             const string = args_body[args_body_offset..end];
@@ -66,7 +70,11 @@ pub fn main(init: std.process.Init) !void {
                             continue;
                         },
                         .suffix => unreachable,
-                        .input_dir, .output_dir => {
+                        .input_dir => {
+                            input_dir = @fromBackingInt(@backingInt(input_dir) + 1);
+                            continue :arg .output_dir;
+                        },
+                        .output_dir => {
                             const dir_handle: *align(1) const std.Io.Dir.Handle = @ptrCast(
                                 args_body[args_body_offset..][0..@sizeOf(std.Io.Dir.Handle)],
                             );
@@ -76,10 +84,21 @@ pub fn main(init: std.process.Init) !void {
                             };
                             switch (state) {
                                 .positional => {
-                                    std.debug.assert(args.test_dir == null);
-                                    args.test_dir = dir;
+                                    std.debug.assert(args.@"test" == null);
+                                    args.@"test" = .{ .input_dir = input_dir, .dir = dir };
                                     std.debug.assert(args.manifest_file == null);
-                                    args.manifest_file = try dir.openFile(init.io, "manifest", .{});
+                                    const manifest_path = "manifest";
+                                    args.manifest_file = try dir.openFile(init.io, manifest_path, .{});
+
+                                    try server.serveMessageHeader(.{
+                                        .tag = .discovered_inputs,
+                                        .bytes_len = @sizeOf(std.zig.Server.Message.InputDir) +
+                                            manifest_path.len + 1,
+                                    });
+                                    try server.out.writeInt(u32, @backingInt(input_dir), .little);
+                                    try server.out.writeAll(manifest_path);
+                                    try server.out.writeByte(0);
+                                    try server.out.flush();
                                 },
                                 .zig => unreachable,
                                 .lib => {
@@ -125,7 +144,7 @@ pub fn main(init: std.process.Init) !void {
             .run_test => {
                 const test_index = try server.receiveBody_u32();
                 try server.serveBodylessMessage(.test_started);
-                const test_result = runTest(init.io, &stderr.interface, &args);
+                const test_result = runTest(init.io, &stderr.interface, &server, &args);
                 try stderr.flush();
                 try server.serveTestResults(.{
                     .index = test_index,
@@ -146,7 +165,12 @@ pub fn main(init: std.process.Init) !void {
         }
     }
 }
-fn runTest(io: std.Io, stderr: *std.Io.Writer, args: *const Args) anyerror!void {
+fn runTest(
+    io: std.Io,
+    stderr: *std.Io.Writer,
+    server: *std.zig.Server,
+    args: *const Args,
+) anyerror!void {
     const manifest_file = args.manifest_file orelse return error.MissingManifestArg;
     const src_dir = args.src_dir orelse return error.MissingSrcDir;
     var manifest_buffer: [512]u8 = undefined;
@@ -179,6 +203,7 @@ fn runTest(io: std.Io, stderr: *std.Io.Writer, args: *const Args) anyerror!void 
                 else => {},
                 .delete => break :contents_r .ending,
             }
+
             const contents_path = contents_path: {
                 const line_rest = line_it.rest();
                 if (line_rest.len > 0) break :contents_path line_rest;
@@ -191,8 +216,18 @@ fn runTest(io: std.Io, stderr: *std.Io.Writer, args: *const Args) anyerror!void 
                 skip_delimiter = true;
                 break :contents_r &contents_impl.dr.interface;
             }
-            const test_dir = args.test_dir orelse return error.ContentsFileInFileTest;
-            contents_file = try test_dir.openFile(io, contents_path, .{});
+
+            const @"test" = args.@"test" orelse return error.ContentsFileInFileTest;
+            try server.serveMessageHeader(.{
+                .tag = .discovered_inputs,
+                .bytes_len = @intCast(@sizeOf(std.zig.Server.Message.InputDir) + contents_path.len + 1),
+            });
+            try server.out.writeInt(u32, @backingInt(@"test".input_dir), .little);
+            try server.out.writeAll(contents_path);
+            try server.out.writeByte(0);
+            try server.out.flush();
+
+            contents_file = try @"test".dir.openFile(io, contents_path, .{});
             contents_impl = .{ .fr = contents_file.?.reader(io, &.{}) };
             break :contents_r &contents_impl.fr.interface;
         };

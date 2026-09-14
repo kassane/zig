@@ -74,6 +74,10 @@ pub const Message = struct {
         broadcast_fuzz_input,
         /// Body is a TimeReport.
         time_report,
+        /// Body is a sequence of:
+        /// - root_dir: InputDir,
+        /// - sub_path: [:0]u8,
+        discovered_inputs,
 
         /// The first message sent by the server over the build system protocol.
         /// Body is a `Handshake`.
@@ -211,6 +215,14 @@ pub const Message = struct {
             cache_hit: bool,
             reserved: u7 = 0,
         };
+    };
+
+    /// A reference to one of the `.input_dir`s from the `.args` message.
+    pub const InputDir = enum(u32) {
+        /// Server cwd relative path, or absolute path.
+        cwd,
+        /// Numbered in the order that `.input_dir`s appear in the `.args` message.
+        _,
     };
 };
 
