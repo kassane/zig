@@ -1901,9 +1901,7 @@ pub fn io(t: *Threaded) Io {
             .processSetCurrentDir = processSetCurrentDir,
             .processSetCurrentPath = processSetCurrentPath,
             .processReplace = processReplace,
-            .processReplacePath = processReplacePath,
             .processSpawn = processSpawn,
-            .processSpawnPath = processSpawnPath,
             .childWait = childWait,
             .childKill = childKill,
 
@@ -15133,23 +15131,7 @@ fn processReplace(userdata: ?*anyopaque, options: process.ReplaceOptions) proces
         });
     };
 
-    return posixExecv(options.expand_arg0, argv_buf.ptr[0].?, argv_buf.ptr, env_block, PATH);
-}
-
-fn processReplacePath(userdata: ?*anyopaque, dir: Dir, options: process.ReplaceOptions) process.ReplaceError {
-    if (!process.can_replace) return error.OperationUnsupported;
-    _ = userdata;
-    _ = dir;
-    _ = options;
-    @panic("TODO processReplacePath");
-}
-
-fn processSpawnPath(userdata: ?*anyopaque, dir: Dir, options: process.SpawnOptions) process.SpawnError!process.Child {
-    if (!process.can_spawn) return error.OperationUnsupported;
-    _ = userdata;
-    _ = dir;
-    _ = options;
-    @panic("TODO processSpawnPath");
+    return posixExec(options.exe, argv_buf.ptr, options.expand_arg0, env_block, PATH);
 }
 
 const processSpawn = switch (native_os) {
@@ -15263,15 +15245,15 @@ fn spawnPosix(t: *Threaded, options: process.SpawnOptions) process.SpawnError!Sp
         if (Thread.current) |current_thread| current_thread.cancel_protection = .blocked;
         const ep1 = err_pipe[1];
 
-        // Must happen befor clobbering fds below.
+        // Must happen before clobbering fds below.
         switch (options.cwd) {
             .inherit => {},
             .dir => |cwd| fchdir(cwd.handle) catch |err| forkBail(ep1, err),
             .path => |cwd| chdir(cwd) catch |err| forkBail(ep1, err),
         }
 
-        for (options.inherit_dirs) |dir| switch (posix.errno(
-            posix.system.fcntl(dir.handle, posix.F.SETFD, @as(u32, 0)),
+        for (options.inherit_dirs) |inherit_dir| switch (posix.errno(
+            posix.system.fcntl(inherit_dir.handle, posix.F.SETFD, @as(u32, 0)),
         )) {
             .SUCCESS => {},
             else => |err| forkBail(ep1, posix.unexpectedErrno(err)),
@@ -15331,14 +15313,14 @@ fn spawnPosix(t: *Threaded, options: process.SpawnOptions) process.SpawnError!Sp
         }
 
         if (options.start_suspended) {
-            switch (posix.errno(posix.system.kill(0, .STOP))) {
+            switch (posix.errno(posix.system.kill(posix.system.getpid(), .STOP))) {
                 .SUCCESS => {},
                 .PERM => forkBail(ep1, error.PermissionDenied),
                 else => forkBail(ep1, error.Unexpected),
             }
         }
 
-        const err = posixExecv(options.expand_arg0, argv_buf.ptr[0].?, argv_buf.ptr, env_block, PATH);
+        const err = posixExec(options.exe, argv_buf.ptr, options.expand_arg0, env_block, PATH);
         forkBail(ep1, err);
     }
 
@@ -17042,61 +17024,109 @@ fn testArgvToCommandLineWindows(argv: []const []const u8, expected_cmd_line: []c
     try std.testing.expectEqualStrings(expected_cmd_line, cmd_line);
 }
 
-fn posixExecv(
-    arg0_expand: process.ArgExpansion,
-    file: [*:0]const u8,
-    child_argv: [*:null]?[*:0]const u8,
+fn posixExec(
+    exe: process.ReplaceOptions.Exe,
+    argv: [*:null]?[*:0]const u8,
+    expand_arg0: process.ArgExpansion,
     env_block: process.Environ.PosixBlock,
     PATH: []const u8,
 ) process.ReplaceError {
-    const file_slice = std.mem.sliceTo(file, 0);
-    if (std.mem.findScalar(u8, file_slice, '/') != null) return posixExecvPath(file, child_argv, env_block);
+    const arg0_slice = std.mem.span(argv[0].?);
+    exe: switch (exe) {
+        .detect => continue :exe if (std.mem.findScalar(u8, arg0_slice, '/')) |_| .{
+            .path = .cwd(),
+        } else .search,
+        .search => {
+            // Use of PATH_MAX here is valid as the path_buf will be passed
+            // directly to the operating system in posixExecveat.
+            var path_buf: [posix.PATH_MAX]u8 = undefined;
+            var it = std.mem.tokenizeScalar(u8, PATH, ':');
+            var err: error{ AccessDenied, FileNotFound, NotDir } = error.FileNotFound;
 
-    // Use of PATH_MAX here is valid as the path_buf will be passed
-    // directly to the operating system in posixExecvPath.
-    var path_buf: [posix.PATH_MAX]u8 = undefined;
-    var it = std.mem.tokenizeScalar(u8, PATH, ':');
-    var seen_eacces = false;
-    var err: process.ReplaceError = error.FileNotFound;
-
-    // In case of expanding arg0 we must put it back if we return with an error.
-    const prev_arg0 = child_argv[0];
-    defer switch (arg0_expand) {
-        .expand => child_argv[0] = prev_arg0,
-        .no_expand => {},
-    };
-
-    while (it.next()) |search_path| {
-        const path_len = search_path.len + file_slice.len + 1;
-        if (path_buf.len < path_len + 1) return error.NameTooLong;
-        @memcpy(path_buf[0..search_path.len], search_path);
-        path_buf[search_path.len] = '/';
-        @memcpy(path_buf[search_path.len + 1 ..][0..file_slice.len], file_slice);
-        path_buf[path_len] = 0;
-        const full_path = path_buf[0..path_len :0].ptr;
-        switch (arg0_expand) {
-            .expand => child_argv[0] = full_path,
-            .no_expand => {},
-        }
-        err = posixExecvPath(full_path, child_argv, env_block);
-        switch (err) {
-            error.AccessDenied => seen_eacces = true,
-            error.FileNotFound, error.NotDir => {},
-            else => |e| return e,
-        }
+            while (it.next()) |search_path| {
+                const path_len = search_path.len + arg0_slice.len + 1;
+                if (path_buf.len < path_len + 1) return error.NameTooLong;
+                @memcpy(path_buf[0..search_path.len], search_path);
+                path_buf[search_path.len] = '/';
+                @memcpy(path_buf[search_path.len + 1 ..][0..arg0_slice.len], arg0_slice);
+                path_buf[path_len] = 0;
+                const full_path = path_buf[0..path_len :0].ptr;
+                switch (expand_arg0) {
+                    .expand => argv[0] = full_path,
+                    .no_expand => {},
+                }
+                switch (posixExecveat(posix.AT.FDCWD, full_path, argv, env_block)) {
+                    error.AccessDenied, error.FileNotFound, error.NotDir => |e| switch (err) {
+                        error.AccessDenied => {},
+                        error.FileNotFound, error.NotDir => err = e,
+                    },
+                    else => |e| return e,
+                }
+            }
+            return err;
+        },
+        .path => |path| return posixExecveat(path.handle, argv[0], argv, env_block),
+        .file => |file| return posixExecveat(file.handle, null, argv, env_block),
+        .explicit => |explicit| {
+            var path_buffer: [posix.PATH_MAX]u8 = undefined;
+            const path_posix = try pathToPosix(explicit.path, &path_buffer);
+            return posixExecveat(explicit.dir.handle, path_posix, argv, env_block);
+        },
     }
-    if (seen_eacces) return error.AccessDenied;
-    return err;
 }
 
 /// This function ignores PATH environment variable.
-pub fn posixExecvPath(
-    path: [*:0]const u8,
-    child_argv: [*:null]const ?[*:0]const u8,
+pub fn posixExecveat(
+    dir: posix.fd_t,
+    path: ?[*:0]const u8,
+    argv: [*:null]const ?[*:0]const u8,
     env_block: process.Environ.PosixBlock,
 ) process.ReplaceError {
     try Thread.checkCancel();
-    switch (posix.errno(posix.system.execve(path, child_argv, env_block.slice.ptr))) {
+    switch (err: {
+        if (path) |p| if (dir == posix.AT.FDCWD or Dir.path.isAbsoluteZ(p)) {
+            break :err posix.errno(posix.system.execve(p, argv, env_block.slice.ptr));
+        };
+        if (comptime native_os == .linux and (!builtin.link_libc or
+            (builtin.target.abi.isGnu() and builtin.target.os.version_range.linux.glibc.order(
+                .{ .major = 2, .minor = 34, .patch = 0 },
+            ).compare(.gte))))
+        {
+            switch (posix.errno(posix.system.execveat(dir, path orelse "", argv, env_block.slice.ptr, .{
+                .EMPTY_PATH = path == null,
+                .SYMLINK_NOFOLLOW = false,
+            }))) {
+                else => |err| break :err err,
+                .NOSYS => {},
+            }
+        }
+        var path_buffer: [posix.PATH_MAX:0]u8 = undefined;
+        var path_len = realPathPosix(dir, &path_buffer) catch |err| switch (err) {
+            else => |e| return e,
+            error.InputOutput,
+            error.FileTooBig,
+            error.NoSpaceLeft,
+            error.PathAlreadyExists,
+            error.SymLinkLoop,
+            error.NetworkNotFound,
+            error.PipeBusy,
+            error.AntivirusInterference,
+            => return error.FileNotFound,
+            error.DeviceBusy,
+            error.NoDevice,
+            error.UnrecognizedVolume,
+            => return error.FileSystem,
+        };
+        if (path) |p| {
+            const path_slice = std.mem.span(p);
+            path_buffer[path_len] = Dir.path.sep;
+            path_len += 1;
+            @memcpy(path_buffer[path_len..][0..path_slice.len], path_slice);
+            path_len += path_slice.len;
+        }
+        path_buffer[path_len] = 0;
+        break :err posix.errno(posix.system.execve(&path_buffer, argv, env_block.slice.ptr));
+    }) {
         .FAULT => |err| return errnoBug(err), // Bad pointer parameter.
         .@"2BIG" => return error.SystemResources,
         .MFILE => return error.ProcessFdQuotaExceeded,

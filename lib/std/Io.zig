@@ -213,9 +213,7 @@ pub const VTable = struct {
     processSetCurrentDir: *const fn (?*anyopaque, Dir) std.process.SetCurrentDirError!void,
     processSetCurrentPath: *const fn (?*anyopaque, []const u8) std.process.SetCurrentPathError!void,
     processReplace: *const fn (?*anyopaque, std.process.ReplaceOptions) std.process.ReplaceError,
-    processReplacePath: *const fn (?*anyopaque, Dir, std.process.ReplaceOptions) std.process.ReplaceError,
     processSpawn: *const fn (?*anyopaque, std.process.SpawnOptions) std.process.SpawnError!std.process.Child,
-    processSpawnPath: *const fn (?*anyopaque, Dir, std.process.SpawnOptions) std.process.SpawnError!std.process.Child,
     childWait: *const fn (?*anyopaque, *std.process.Child) std.process.Child.WaitError!std.process.Child.Term,
     childKill: *const fn (?*anyopaque, *std.process.Child) void,
 
@@ -2797,9 +2795,7 @@ pub const failing: std.Io = .{
         .processSetCurrentDir = failingProcessSetCurrentDir,
         .processSetCurrentPath = failingProcessSetCurrentPath,
         .processReplace = failingProcessReplace,
-        .processReplacePath = failingProcessReplacePath,
         .processSpawn = failingProcessSpawn,
-        .processSpawnPath = failingProcessSpawnPath,
         .childWait = unreachableChildWait,
         .childKill = unreachableChildKill,
 
@@ -3451,22 +3447,8 @@ pub fn failingProcessReplace(userdata: ?*anyopaque, options: std.process.Replace
     return error.OperationUnsupported;
 }
 
-pub fn failingProcessReplacePath(userdata: ?*anyopaque, dir: Dir, options: std.process.ReplaceOptions) std.process.ReplaceError {
-    _ = userdata;
-    _ = dir;
-    _ = options;
-    return error.OperationUnsupported;
-}
-
 pub fn failingProcessSpawn(userdata: ?*anyopaque, options: std.process.SpawnOptions) std.process.SpawnError!std.process.Child {
     _ = userdata;
-    _ = options;
-    return error.OperationUnsupported;
-}
-
-pub fn failingProcessSpawnPath(userdata: ?*anyopaque, dir: Dir, options: std.process.SpawnOptions) std.process.SpawnError!std.process.Child {
-    _ = userdata;
-    _ = dir;
     _ = options;
     return error.OperationUnsupported;
 }

@@ -3488,7 +3488,7 @@ pub fn addNewIncrementalTests(
 
             if (options.skip_llvm and test_target.backend == .llvm) continue;
 
-            const target_str = b.fmt("{s}-{t}", .{
+            const target_str = b.fmt("{s}-incremental-{t}", .{
                 resolved_target.query.zigTriple(b.allocator) catch @panic("OOM"),
                 test_target.backend,
             });

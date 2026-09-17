@@ -231,6 +231,7 @@ pub fn make(
             argv_list.appendAssumeCapacity("--listen=-");
         },
         .protocol => {
+            argv_list.appendAssumeCapacity("--listen=-");
             try input_dirs.append(gpa, if (conf_run.cwd.value) |lazy_cwd|
                 try maker.resolveLazyPathIndex(arena, lazy_cwd, run_index)
             else
@@ -742,7 +743,8 @@ fn waitZigTest(
     run_index: Configuration.Step.Index,
     maker: *Maker,
     child: *process.Child,
-    progress_node: std.Progress.Node,
+    tests_prog_node: std.Progress.Node,
+    test_prog_node: std.Progress.Node,
     protocol_args: []const u8,
     input_dirs: []const Cache.Path,
     man: ?*Cache.Manifest,
@@ -765,9 +767,6 @@ fn waitZigTest(
     const io = graph.io;
     const step = maker.stepByIndex(run_index);
 
-    var sub_prog_node: ?std.Progress.Node = null;
-    defer if (sub_prog_node) |n| n.end();
-
     const stdout = multi_reader.reader(0);
     const stderr = multi_reader.reader(1);
 
@@ -788,7 +787,7 @@ fn waitZigTest(
 
     if (opt_metadata.*) |*md| {
         // Previous unit test process died or was killed; we're continuing where it left off
-        requestNextTest(&client, md, &sub_prog_node) catch |err| return .{ .write_failed = err };
+        requestNextTest(&client, md, test_prog_node) catch |err| return .{ .write_failed = err };
     } else {
         // Running unit tests normally
         run.fuzz_tests.clearRetainingCapacity();
@@ -859,27 +858,27 @@ fn waitZigTest(
 
                 const string_bytes = body_r.take(tm_hdr.string_bytes_len) catch unreachable;
 
-                progress_node.setEstimatedTotalItems(names.len);
+                tests_prog_node.setEstimatedTotalItems(names.len);
                 opt_metadata.* = .{
                     .string_bytes = try arena.dupe(u8, string_bytes),
                     .ns_per_test = try arena.alloc(u64, results.test_count),
                     .names = names,
                     .expected_panic_msgs = expected_panic_msgs,
                     .next_index = 0,
-                    .prog_node = progress_node,
                 };
                 @memset(opt_metadata.*.?.ns_per_test, std.math.maxInt(u64));
 
                 active_test_index = null;
                 last_update = .now(io, .awake);
 
-                requestNextTest(&client, &opt_metadata.*.?, &sub_prog_node) catch |err| return .{ .write_failed = err };
+                requestNextTest(&client, &opt_metadata.*.?, test_prog_node) catch |err| return .{ .write_failed = err };
             },
             .test_started => {
                 active_test_index = opt_metadata.*.?.next_index - 1;
                 last_update = .now(io, .awake);
             },
             .test_results => {
+                tests_prog_node.completeOne();
                 const md = &opt_metadata.*.?;
 
                 const tr_hdr = body_r.takeStruct(std.zig.Server.Message.TestResults, .little) catch unreachable;
@@ -924,7 +923,7 @@ fn waitZigTest(
                 md.ns_per_test[tr_hdr.index] = @intCast(last_update.durationTo(now).raw.nanoseconds);
                 last_update = now;
 
-                requestNextTest(&client, md, &sub_prog_node) catch |err| return .{ .write_failed = err };
+                requestNextTest(&client, md, test_prog_node) catch |err| return .{ .write_failed = err };
             },
             .discovered_inputs => while (body_r.takeEnum(
                 std.zig.Server.Message.InputDir,
@@ -1549,6 +1548,7 @@ fn evalZigTest(
             maker,
             &child,
             progress_node,
+            spawn_options.progress_node,
             protocol_args,
             input_dirs,
             man,
@@ -1681,7 +1681,6 @@ const TestMetadata = struct {
     expected_panic_msgs: []const u32,
     string_bytes: []const u8,
     next_index: u32,
-    prog_node: std.Progress.Node,
 
     fn toCachedTestMetadata(tm: TestMetadata) CachedTestMetadata {
         return .{
@@ -1704,16 +1703,14 @@ pub const CachedTestMetadata = struct {
     }
 };
 
-fn requestNextTest(client: *std.zig.Client, metadata: *TestMetadata, sub_prog_node: *?std.Progress.Node) !void {
+fn requestNextTest(client: *std.zig.Client, metadata: *TestMetadata, test_prog_node: std.Progress.Node) !void {
     while (metadata.next_index < metadata.names.len) {
         const i = metadata.next_index;
         metadata.next_index += 1;
 
         if (metadata.expected_panic_msgs[i] != 0) continue;
 
-        const name = metadata.testName(i);
-        if (sub_prog_node.*) |n| n.end();
-        sub_prog_node.* = metadata.prog_node.start(name, 0);
+        test_prog_node.setName(metadata.testName(i));
 
         try client.serveRunTest(i);
         return;
@@ -2664,9 +2661,9 @@ fn spawnChildAndCollect(
         .cwd = child_cwd,
         .environ_map = environ_map,
         .request_resource_usage_statistics = true,
-        .stdin = if (conf_run.stdin.u != .none) s: {
+        .stdin = if (conf_run.stdin.u != .none) stdin: {
             assert(conf_run.flags.stdio != .inherit);
-            break :s .pipe;
+            break :stdin .pipe;
         } else switch (conf_run.flags.stdio) {
             .infer_from_args => if (maker.protocol_server == null and has_side_effects) .inherit else .ignore,
             .inherit => .inherit,
@@ -2691,10 +2688,10 @@ fn spawnChildAndCollect(
 
     if (maker.protocol_server != null) {
         if (spawn_options.stdin == .inherit) {
-            return step.fail(maker, "Cannot inherit stdin when running through over the build system protocol", .{});
+            return step.fail(maker, "Cannot inherit stdin when running over the build system protocol", .{});
         }
         if (spawn_options.stdout == .inherit) {
-            return step.fail(maker, "Cannot inherit stdout when running through over the build system protocol", .{});
+            return step.fail(maker, "Cannot inherit stdout when running over the build system protocol", .{});
         }
         assert(spawn_options.stderr != .inherit);
     }
@@ -2720,7 +2717,12 @@ fn spawnChildAndCollect(
             step.result_duration_ns = @intCast(started.untilNow(io).raw.nanoseconds);
             return try result;
         },
-        .zig_test, .protocol => {
+        .zig_test, .protocol => |stdio| {
+            spawn_options.progress_node = if (conf_run.flags.disable_zig_progress or fuzz_context != null)
+                .none
+            else
+                progress_node.start(@tagName(stdio), 0);
+            defer spawn_options.progress_node.end();
             try setColorEnvironmentVariables(&conf_run, environ_map, graph.stderr_mode.?);
             const started: Io.Clock.Timestamp = .now(io, .awake);
             const result = evalZigTest(

@@ -8809,6 +8809,11 @@ pub const O = switch (native_os) {
     else => void,
 };
 
+pub const EXECVEAT = switch (native_os) {
+    .linux => linux.EXECVEAT,
+    else => void,
+};
+
 pub const MAP = switch (native_os) {
     .linux => linux.MAP,
     .emscripten => packed struct(u32) {
@@ -11045,6 +11050,7 @@ pub extern "c" fn renameat(olddirfd: fd_t, old: [*:0]const u8, newdirfd: fd_t, n
 pub extern "c" fn chdir(path: [*:0]const u8) c_int;
 pub extern "c" fn fchdir(fd: fd_t) c_int;
 pub extern "c" fn execve(path: [*:0]const u8, argv: [*:null]const ?[*:0]const u8, envp: [*:null]const ?[*:0]const u8) c_int;
+pub extern "c" fn execveat(dirfd: fd_t, path: [*:0]const u8, argv: [*:null]const ?[*:0]const u8, envp: [*:null]const ?[*:0]const u8, flags: EXECVEAT) c_int;
 pub extern "c" fn dup(fd: fd_t) c_int;
 pub extern "c" fn dup2(old_fd: fd_t, new_fd: fd_t) c_int;
 pub extern "c" fn dup3(old: c_int, new: c_int, flags: c_uint) c_int;
