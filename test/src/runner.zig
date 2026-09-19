@@ -749,9 +749,14 @@ fn runTest(
                                 stderr.tossBuffered();
                             }
                             switch (check) {
-                                .errors => if (error_bundle.errorMessageCount() != 0) {
-                                    @panic("TODO");
-                                } else fatal("expected compile errors", .{}),
+                                .errors => {
+                                    var error_aw: std.Io.Writer.Allocating = .init(gpa);
+                                    defer error_aw.deinit();
+                                    try error_bundle.renderToWriter(.{
+                                        .include_source_line = false,
+                                    }, &error_aw.writer);
+                                    try std.testing.expectEqualStrings(expected, error_aw.written());
+                                },
                                 .stdout, .exit, .lldb => if (error_bundle.errorMessageCount() != 0) {
                                     try error_bundle.renderToStderr(io, .{}, .auto);
                                     fatal("unexpected compile errors", .{});
