@@ -42,12 +42,13 @@ pub fn main(init: std.process.Init) !void {
     const zig_path = zig_path_arg orelse fatal("missing '--zig=path/to/zig'", .{});
     const lib_path = lib_path_arg orelse fatal("missing '--lib=path/to/lib'", .{});
 
-    const test_file = try std.Io.Dir.cwd().openFile(init.io, test_path, .{
+    const cwd: std.Io.Dir = .cwd();
+    const test_file = try cwd.openFile(init.io, test_path, .{
         .allow_directory = true,
     });
-    const zig_exe = try std.Io.Dir.cwd().openFile(init.io, zig_path, .{});
+    const zig_exe = try cwd.openFile(init.io, zig_path, .{});
     defer zig_exe.close(init.io);
-    const lib_dir = try std.Io.Dir.cwd().openDir(init.io, lib_path, .{});
+    const lib_dir = try cwd.openDir(init.io, lib_path, .{});
     defer lib_dir.close(init.io);
 
     const src_dir_path = "src_" ++ std.fmt.hex(rand_int: {
@@ -55,10 +56,10 @@ pub fn main(init: std.process.Init) !void {
         init.io.random(@ptrCast(&rand_int));
         break :rand_int rand_int;
     });
-    var src_dir = try std.Io.Dir.cwd().createDirPathOpen(init.io, src_dir_path, .{});
+    var src_dir = try cwd.createDirPathOpen(init.io, src_dir_path, .{});
     defer {
         src_dir.close(init.io);
-        if (!keep_src) std.Io.Dir.cwd().deleteTree(init.io, src_dir_path) catch |err| {
+        if (!keep_src) cwd.deleteTree(init.io, src_dir_path) catch |err| {
             std.log.warn("fataled to delete tree '{s}': {t}", .{ src_dir_path, err });
         };
     }
@@ -423,7 +424,8 @@ fn runTest(
     target_string: []const u8,
 ) !void {
     const manifest_file = args.manifest_file orelse return error.MissingManifestArg;
-    const src_dir = args.src_dir orelse return error.MissingSrcDir;
+    const src_dir =
+        try (args.src_dir orelse return error.MissingSrcDir).createDirPathOpen(io, target_string, .{});
     const target: Compiler.Target = target: {
         const backend_split = std.mem.findScalarLast(u8, target_string, '-') orelse
             return error.TargetMissingBackend;
@@ -544,6 +546,8 @@ fn runTest(
                     },
                     "-target",
                     target.triple,
+                    "--cache-dir",
+                    ".zig-cache",
                 });
                 switch (target.mode) {
                     .whole => {},
@@ -663,28 +667,6 @@ fn runTest(
                     };
                     const body = comp.client.in.take(header.bytes_len) catch unreachable;
                     switch (header.tag) {
-                        .error_bundle => {
-                            const error_bundle = try std.zig.Server.allocErrorBundle(arena, body);
-                            if (stderr.bufferedLen() > 0) {
-                                if (comp.allow_compiler_stderr) {
-                                    std.log.info("error_bundle stderr:\n{s}", .{stderr.buffered()});
-                                } else {
-                                    fatal("error_bundle unexpected stderr:\n{s}", .{stderr.buffered()});
-                                }
-                                stderr.tossBuffered();
-                            }
-                            switch (check) {
-                                .errors => if (error_bundle.errorMessageCount() != 0) {
-                                    @panic("TODO");
-                                } else fatal("expected compile errors", .{}),
-                                .stdout, .exit, .lldb => if (error_bundle.errorMessageCount() != 0) {
-                                    try error_bundle.renderToStderr(io, .{}, .auto);
-                                    fatal("unexpected compile errors", .{});
-                                },
-                            }
-                            comp.state = .idle;
-                            break :cmd;
-                        },
                         .emit_digest => {
                             var r: std.Io.Reader = .fixed(body);
                             _ = r.takeStruct(std.zig.Server.Message.EmitDigest, .little) catch
@@ -708,7 +690,7 @@ fn runTest(
                             }
                             const digest = r.takeArray(std.Build.Cache.bin_digest_len) catch
                                 unreachable;
-                            const result_dir = ".zig-cache" ++ std.Io.Dir.path.sep_str ++
+                            const bin_dir = ".zig-cache" ++ std.Io.Dir.path.sep_str ++
                                 "o" ++ std.Io.Dir.path.sep_str ++ std.Build.Cache.binToHex(digest.*);
                             const bin_name = try std.zig.EmitArtifact.bin.cacheName(arena, .{
                                 .root_name = comp.root_name,
@@ -719,16 +701,20 @@ fn runTest(
                                 .output_mode = comp.output_mode,
                             });
                             const bin_path =
-                                try std.Io.Dir.path.join(arena, &.{ result_dir, bin_name });
-                            const bin_file = try std.Io.Dir.cwd().openFile(io, bin_path, .{});
+                                try std.Io.Dir.path.join(arena, &.{ bin_dir, bin_name });
+                            const bin_file = try src_dir.openFile(io, bin_path, .{});
                             defer bin_file.close(io);
                             switch (check) {
                                 .errors => unreachable,
                                 .stdout, .exit => {
-                                    const result = std.process.run(arena, io, .{
+                                    const result = std.process.run(gpa, io, .{
                                         .exe = .{ .file = bin_file },
                                         .argv = &.{bin_path},
                                     }) catch continue;
+                                    defer {
+                                        gpa.free(result.stdout);
+                                        gpa.free(result.stderr);
+                                    }
                                     switch (result.term) {
                                         .exited => |code| switch (check) {
                                             .errors, .lldb => unreachable,
@@ -751,6 +737,28 @@ fn runTest(
                                 },
                                 .lldb => {},
                             }
+                        },
+                        .error_bundle => {
+                            const error_bundle = try std.zig.Server.allocErrorBundle(arena, body);
+                            if (stderr.bufferedLen() > 0) {
+                                if (comp.allow_compiler_stderr) {
+                                    std.log.info("error_bundle stderr:\n{s}", .{stderr.buffered()});
+                                } else {
+                                    fatal("error_bundle unexpected stderr:\n{s}", .{stderr.buffered()});
+                                }
+                                stderr.tossBuffered();
+                            }
+                            switch (check) {
+                                .errors => if (error_bundle.errorMessageCount() != 0) {
+                                    @panic("TODO");
+                                } else fatal("expected compile errors", .{}),
+                                .stdout, .exit, .lldb => if (error_bundle.errorMessageCount() != 0) {
+                                    try error_bundle.renderToStderr(io, .{}, .auto);
+                                    fatal("unexpected compile errors", .{});
+                                },
+                            }
+                            comp.state = .idle;
+                            break :cmd;
                         },
                         else => {}, // Ignore other messages,
                     }
@@ -860,44 +868,6 @@ const Compiler = struct {
             cbe,
         };
     };
-
-    fn update(comp: *Compiler, io: std.Io) !void {
-        comp.client.serveBodylessMessage(.update) catch |err| switch (err) {
-            error.WriteFailed => return comp.fw.err.?,
-        };
-        while (true) {
-            const header = comp.client.receiveMessageWithMultiReader(
-                &comp.mr,
-                .none,
-            ) catch |err| switch (err) {
-                error.Timeout => unreachable,
-                error.EndOfStream => break,
-                else => |e| return e,
-            };
-            const body = comp.client.in.take(header.bytes_len) catch unreachable;
-            switch (header.tag) {
-                .error_bundle => {
-                    return;
-                },
-                .emit_digest => {
-                    _ = body;
-                },
-                else => {}, // Ignore other messages,
-            }
-        }
-
-        const buffered_stderr = comp.mr.reader(1).buffered();
-        if (buffered_stderr.len > 0) {
-            if (comp.allow_compiler_stderr) {
-                std.log.info("stderr:\n{s}", .{buffered_stderr});
-            } else {
-                fatal("unexpected stderr:\n{s}", .{buffered_stderr});
-            }
-        }
-
-        try comp.exit(io);
-        fatal("compiler failed to send terminating error_bundle", .{});
-    }
 
     fn exit(comp: *Compiler, io: std.Io) !void {
         comp.client.serveBodylessMessage(.exit) catch |err| switch (err) {
