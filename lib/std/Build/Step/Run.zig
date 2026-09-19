@@ -241,7 +241,7 @@ pub fn create(owner: *std.Build, name: []const u8) *Run {
 }
 
 pub fn setName(run: *Run, name: []const u8) void {
-    run.step.name = name;
+    run.step.name = run.step.owner.graph.dupeString(name);
     run.rename_step_with_output_arg = false;
 }
 

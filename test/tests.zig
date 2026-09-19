@@ -2502,7 +2502,7 @@ pub fn addStandaloneTests(
         .simple_skip_release_small = mem.findScalar(OptimizeMode, optimize_modes, .small) == null,
     });
     const test_cases_dep_step = test_cases_dep.builder.default_step;
-    test_cases_dep_step.name = b.graph.dupeString(test_cases_dep_name);
+    test_cases_dep_step.name = test_cases_dep_name;
     step.dependOn(test_cases_dep.builder.default_step);
     return step;
 }
