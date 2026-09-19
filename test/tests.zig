@@ -3344,108 +3344,15 @@ const IncrementalTestOptions = struct {
 
 pub fn addIncrementalTests(
     b: *std.Build,
-    test_step: *Step,
-    options: IncrementalTestOptions,
-) !void {
-    const io = b.graph.io;
-
-    const incr_check = b.addExecutable(.{
-        .name = "incr-check",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tools/incr-check.zig"),
-            .target = b.graph.host,
-            .optimize = .debug,
-        }),
-    });
-
-    b.dependOnDirectoryContents(b.path("test/incremental"));
-
-    var dir = try b.root.openDir(io, "test/incremental", .{ .iterate = true });
-    defer dir.close(io);
-
-    var it = try dir.walk(b.graph.arena);
-    while (try it.next(io)) |entry| {
-        if (isEditorFileName(entry.basename)) continue;
-
-        for (options.test_filters) |test_filter| {
-            if (std.mem.find(u8, entry.path, test_filter)) |_| break;
-        } else if (options.test_filters.len > 0) continue;
-
-        switch (entry.kind) {
-            .file => {},
-            .directory => {
-                b.dependOnDirectoryContents(b.path(b.pathJoin(&.{ "test", "incremental", entry.path })));
-            },
-            else => continue,
-        }
-        b.dependOnFileContents(b.path(b.pathJoin(&.{ "test", "incremental", entry.path })));
-
-        for (incremental_targets) |test_target| {
-            const resolved_target = b.resolveTargetQuery(test_target.target);
-
-            if (options.skip_non_native and !isNative(&resolved_target, &b.graph.host.result))
-                continue;
-
-            const target = &resolved_target.result;
-
-            if (options.skip_wasm and target.cpu.arch.isWasm()) continue;
-
-            if (options.skip_freebsd and target.os.tag == .freebsd) continue;
-            if (options.skip_netbsd and target.os.tag == .netbsd) continue;
-            if (options.skip_openbsd and target.os.tag == .openbsd) continue;
-            if (options.skip_windows and target.os.tag == .windows) continue;
-            if (options.skip_darwin and target.os.tag.isDarwin()) continue;
-            if (options.skip_linux and target.os.tag == .linux) continue;
-
-            if (options.skip_llvm and test_target.backend == .llvm) continue;
-
-            const target_str = b.fmt("{s}-{t}", .{
-                resolved_target.query.zigTriple(b.allocator) catch @panic("OOM"),
-                test_target.backend,
-            });
-
-            if (options.test_target_filters.len > 0) {
-                for (options.test_target_filters) |filter| {
-                    if (std.mem.find(u8, target_str, filter) != null) break;
-                } else continue;
-            }
-
-            const run = b.addRunArtifact(incr_check);
-            run.setName(b.fmt("incr-check {s} '{s}'", .{ target_str, entry.basename }));
-
-            run.addArg(b.graph.zig_exe);
-            run.addFileArg(b.path("test/incremental/").path(b, entry.path));
-
-            run.addArg("--zig-lib-dir");
-            run.addDirectoryArg(.zig_lib);
-
-            run.addArgs(&.{ "--target", target_str });
-
-            run.addArg("--quiet"); // don't fill stderr telling us about skipped tests etc
-
-            run.addThirdPartyEnabledArgDarling(.{ .enabled = "-fdarling" });
-            run.addThirdPartyEnabledArgQemu(.{ .enabled = "-fqemu" });
-            run.addThirdPartyEnabledArgRosetta(.{ .enabled = "-frosetta" });
-            run.addThirdPartyEnabledArgWasmtime(.{ .enabled = "-fwasmtime" });
-            run.addThirdPartyEnabledArgWine(.{ .enabled = "-fwine" });
-
-            run.addCheck(.{ .expect_term = .{ .exited = 0 } });
-            test_step.dependOn(&run.step);
-        }
-    }
-}
-
-pub fn addNewIncrementalTests(
-    b: *std.Build,
     runner: *std.Build.Step.Compile,
     options: IncrementalTestOptions,
 ) !*Step {
-    const tests_step = b.step("test-new-incremental", "Run the new incremental compilation test cases");
+    const tests_step = b.step("test-incremental", "Run the new incremental compilation test cases");
 
-    const tests_path = b.path("test/incremental2");
+    const tests_path = b.path("test/incremental");
     b.dependOnDirectoryContents(tests_path);
 
-    var tests_dir = try b.root.openDir(b.graph.io, "test/incremental2", .{ .iterate = true });
+    var tests_dir = try b.root.openDir(b.graph.io, "test/incremental", .{ .iterate = true });
     defer tests_dir.close(b.graph.io);
     var test_it = tests_dir.iterate();
     while (try test_it.next(b.graph.io)) |@"test"| {

@@ -471,7 +471,7 @@ fn runTest(
             continue;
         }
         const cmd = std.meta.stringToEnum(
-            enum { skip, exe, lib, obj, write, delete, update, check },
+            enum { todo, skip, exe, lib, obj, write, delete, update, check },
             cmd_str,
         ) orelse return error.UnknownCommand;
         var maybe_arg = line_it.next();
@@ -525,6 +525,7 @@ fn runTest(
         };
         defer cmd_prog_node.end();
         cmd: switch (cmd) {
+            .todo => _ = try contents_r.discardRemaining(),
             .skip => if (!allow_skip)
                 return error.NonInitialSkipCommand // #skip must appear first
             else if (std.mem.eql(u8, target_string, maybe_arg orelse return error.MissingArg))
@@ -646,12 +647,12 @@ fn runTest(
                 update_num += 1;
             },
             .check => {
-                const expected = try contents_r.allocRemaining(gpa, .unlimited);
-                defer gpa.free(expected);
                 const check = std.meta.stringToEnum(
                     enum { errors, stdout, exit, lldb },
                     maybe_arg orelse return error.MissingCheckArg,
                 ) orelse return error.UnknownCheck;
+                const expected = try contents_r.allocRemaining(gpa, .unlimited);
+                defer gpa.free(expected);
 
                 const comp = &(compiler orelse return error.MissingCompiler);
                 if (comp.state != .update) return error.MissingUpdate;
@@ -753,7 +754,9 @@ fn runTest(
                                     var error_aw: std.Io.Writer.Allocating = .init(gpa);
                                     defer error_aw.deinit();
                                     try error_bundle.renderToWriter(.{
+                                        .include_reference_trace = false,
                                         .include_source_line = false,
+                                        .include_log_text = true,
                                     }, &error_aw.writer);
                                     try std.testing.expectEqualStrings(expected, error_aw.written());
                                 },
@@ -783,12 +786,18 @@ fn runTest(
             },
         }
         std.debug.assert(try contents_r.discardRemaining() == 0);
-        if (cmd != .skip) allow_skip = false;
+        switch (cmd) {
+            .todo, .skip => {},
+            else => allow_skip = false,
+        }
     } else |err| switch (err) {
         else => |e| return e,
         error.EndOfStream => if (skip_delimiter) return error.MissingDelimiter,
     }
-    if (compiler) |*comp| try comp.exit(io);
+    if (compiler) |*comp| {
+        if (comp.state != .idle) return error.MissingCheck;
+        try comp.exit(io);
+    }
 }
 const DelimitedReader = struct {
     const Io = std.Io;
