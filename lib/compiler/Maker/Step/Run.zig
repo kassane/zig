@@ -2212,14 +2212,14 @@ fn runCommand(
                 const root_module = producer.root_module.get(conf);
                 const root_module_target = root_module.resolved_target.get(conf).?.result.get(conf);
                 const root_target = root_module_target.unwrapTarget(conf);
-                const link_libc = maker.stepByIndex(producer_index).extended.compile.is_linking_libc;
+                const config = maker.stepByIndex(producer_index).extended.compile.config.?;
 
                 const host: std.Target = std.zig.system.resolveTargetQuery(io, .{}) catch |he| switch (he) {
                     error.Canceled => |e| return e,
                     else => builtin.target,
                 };
 
-                const need_cross_libc = link_libc and root_target.os.tag == .linux and
+                const need_cross_libc = config.flags.link_libc and root_target.os.tag == .linux and
                     switch (producer.flags2.linkage) {
                         .static => false,
                         .dynamic => true,
@@ -2229,7 +2229,8 @@ fn runCommand(
                     .host_cpu_arch = host.cpu.arch,
                     .host_os_tag = host.os.tag,
                     .qemu_fixes_dl = need_cross_libc and graph.libc_runtimes_dir != null,
-                    .link_libc = link_libc,
+                    .link_mode = config.flags.link_mode,
+                    .link_libc = config.flags.link_libc,
                 })) {
                     .native, .rosetta => {
                         if (allow_skip) return error.MakeSkipped;

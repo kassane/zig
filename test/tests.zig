@@ -3356,6 +3356,10 @@ pub fn addIncrementalTests(
     defer tests_dir.close(b.graph.io);
     var test_it = tests_dir.iterate();
     while (try test_it.next(b.graph.io)) |@"test"| {
+        for (options.test_filters) |filter| {
+            if (std.mem.find(u8, @"test".name, filter) != null) break;
+        } else if (options.test_filters.len > 0) continue;
+
         const test_path = tests_path.path(b, @"test".name);
         switch (@"test".kind) {
             else => continue,
@@ -3400,11 +3404,9 @@ pub fn addIncrementalTests(
                 test_target.backend,
             });
 
-            if (options.test_target_filters.len > 0) {
-                for (options.test_target_filters) |filter| {
-                    if (std.mem.find(u8, target_str, filter) != null) break;
-                } else continue;
-            }
+            for (options.test_target_filters) |filter| {
+                if (std.mem.find(u8, target_str, filter) != null) break;
+            } else if (options.test_target_filters.len > 0) continue;
 
             run.addArgs(&.{ "--target", target_str });
         }

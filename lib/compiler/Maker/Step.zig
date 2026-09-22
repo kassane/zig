@@ -624,6 +624,7 @@ fn zigProcessUpdate(step_index: Configuration.Step.Index, maker: *Maker, zp: *Zi
             else => |e| return e,
         };
         const body = client.in.take(header.bytes_len) catch unreachable;
+        var body_r: std.Io.Reader = .fixed(body);
 
         switch (header.tag) {
             .zig_version => {
@@ -635,16 +636,22 @@ fn zigProcessUpdate(step_index: Configuration.Step.Index, maker: *Maker, zp: *Zi
                     );
                 }
             },
+            .config => switch (s.extended) {
+                else => unreachable,
+                .compile => |*compile| compile.config =
+                    body_r.takeStruct(std.zig.Server.Message.Config, .little) catch unreachable,
+                .translate_c => {},
+            },
             .error_bundle => {
                 s.result_error_bundle = try std.zig.Server.allocErrorBundle(gpa, body);
                 // This message indicates the end of the update.
                 if (watch) break;
             },
             .emit_digest => {
-                const EmitDigest = std.zig.Server.Message.EmitDigest;
-                const emit_digest: *align(1) const EmitDigest = @ptrCast(body);
+                const emit_digest = body_r.takeStruct(std.zig.Server.Message.EmitDigest, .little) catch unreachable;
+                const digest = body_r.takeArray(Cache.bin_digest_len) catch unreachable;
                 s.result_cached = emit_digest.flags.cache_hit;
-                result = .{ .bin = body[@sizeOf(EmitDigest)..][0..Cache.bin_digest_len].* };
+                result = .{ .bin = digest.* };
             },
             .file_system_inputs => {
                 clearWatchInputs(s, maker);
@@ -704,8 +711,7 @@ fn zigProcessUpdate(step_index: Configuration.Step.Index, maker: *Maker, zp: *Zi
                 }
             },
             .time_report => if (maker.web_server) |ws| {
-                const TimeReport = std.zig.Server.Message.TimeReport;
-                const tr: *align(1) const TimeReport = @ptrCast(body[0..@sizeOf(TimeReport)]);
+                const tr = body_r.takeStruct(std.zig.Server.Message.TimeReport, .little) catch unreachable;
                 ws.updateTimeReportCompile(.{
                     .compile_step = step_index,
                     .use_llvm = tr.flags.use_llvm,
@@ -714,7 +720,7 @@ fn zigProcessUpdate(step_index: Configuration.Step.Index, maker: *Maker, zp: *Zi
                     .llvm_pass_timings_len = tr.llvm_pass_timings_len,
                     .files_len = tr.files_len,
                     .decls_len = tr.decls_len,
-                    .trailing = body[@sizeOf(TimeReport)..],
+                    .trailing = body_r.buffered(),
                 });
             },
             else => {}, // ignore other messages

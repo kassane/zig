@@ -791,7 +791,7 @@ pub fn build(b: *std.Build) !void {
     const runner = b.addExecutable(.{
         .name = "runner",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("test/src/runner.zig"),
+            .root_source_file = b.path("test/src/Runner.zig"),
             .target = b.graph.host,
         }),
     });
