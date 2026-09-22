@@ -12355,7 +12355,7 @@ pub fn printNode(
             mf_node.flags.alignment.toByteUnits(),
             mf_node.flags.position,
             if (mf_node.flags.bubbles_moved) " bubbles_moved" else "",
-            if (mf_node.flags.resized) " moved" else "",
+            if (mf_node.flags.moved) " moved" else "",
             if (mf_node.flags.resized) " resized" else "",
             if (mf_node.flags.enable_next_moved) " enable_next_moved" else "",
             if (mf_node.flags.next_moved) " next_moved" else "",
