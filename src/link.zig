@@ -964,6 +964,7 @@ pub const File = struct {
     }
 
     pub fn updateErrorData(base: *File, pt: Zcu.PerThread) Error!void {
+        if (base.comp.zcu.?.llvm_object != null) return;
         switch (base.tag) {
             else => {},
             inline .elf2, .coff, .macho2 => |tag| {
