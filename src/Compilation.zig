@@ -2429,11 +2429,7 @@ pub fn create(gpa: Allocator, arena: Allocator, io: Io, diag: *CreateDiagnostic,
             // If linking against host libc installation, instead queue up jobs
             // for loading those files in the linker.
             if (comp.config.link_libc and is_exe_or_dyn_lib) {
-                // If the "is darwin" check is moved below the libc_installation check below,
-                // error.LibCInstallationMissingCrtDir is returned from lci.resolveCrtPaths().
-                if (target.isDarwinLibC()) {
-                    // TODO delete logic from MachO flush() and queue up tasks here instead.
-                } else if (comp.libc_installation) |lci| {
+                if (comp.libc_installation) |lci| {
                     const basenames = LibCInstallation.CrtBasenames.get(.{
                         .target = target,
                         .link_libc = comp.config.link_libc,
@@ -2456,6 +2452,12 @@ pub fn create(gpa: Allocator, arena: Allocator, io: Io, diag: *CreateDiagnostic,
                     }
                     // Loads the libraries provided by `target_util.libcFullLinkFlags(target)`.
                     comp.oneshot_prelink_tasks.appendAssumeCapacity(.load_host_libc);
+                } else if (target.isDarwinLibC()) {
+                    try comp.oneshot_prelink_tasks.append(gpa, .{ .load_tbd = .{
+                        .root_dir = comp.dirs.zig_lib,
+                        .sub_path = "libc" ++ fs.path.sep_str ++ "darwin" ++ fs.path.sep_str ++ "libSystem.tbd",
+                    } });
+                    // TODO delete logic from MachO flush() and queue up tasks here instead.
                 } else if (target.isMuslLibC()) {
                     if (!std.zig.target.canBuildLibC(target)) return diag.fail(.cross_libc_unavailable);
 

@@ -510,7 +510,7 @@ pub fn libcFullLinkFlags(target: *const std.Target) []const []const u8 {
         },
         // On SerenityOS libc includes libm, libpthread, libdl, and libssp.
         .serenity => &.{"-lc"},
-        else => &.{},
+        else => if (target.os.tag.isDarwin()) &.{"-lSystem"} else &.{},
     };
     return result;
 }

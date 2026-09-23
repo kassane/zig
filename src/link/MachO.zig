@@ -4,6 +4,8 @@ pub const Relocation = @import("MachO/Relocation.zig");
 
 base: link.File,
 
+all_inputs: std.ArrayList(link.Input),
+
 rpath_list: []const []const u8,
 
 /// Debug symbols bundle (or dSym).
@@ -190,6 +192,7 @@ pub fn createEmpty(
             .file = null,
             .build_id = options.build_id,
         },
+        .all_inputs = .empty,
         .rpath_list = options.rpath_list,
         .pagezero_size = options.pagezero_size,
         .headerpad_size = options.headerpad_size,
@@ -271,6 +274,8 @@ pub fn deinit(self: *MachO) void {
     const gpa = comp.gpa;
     const io = comp.io;
 
+    self.all_inputs.deinit(gpa);
+
     if (self.d_sym) |*d_sym| {
         d_sym.deinit();
     }
@@ -334,6 +339,11 @@ pub fn deinit(self: *MachO) void {
     self.thunks.deinit(gpa);
 }
 
+pub fn loadInput(self: *MachO, input: link.Input) link.Error!void {
+    const gpa = self.base.comp.gpa;
+    try self.all_inputs.append(gpa, input);
+}
+
 pub fn flush(
     self: *MachO,
     arena: Allocator,
@@ -343,6 +353,8 @@ pub fn flush(
     const tracy = trace(@src());
     defer tracy.end();
 
+    _ = arena;
+
     const comp = self.base.comp;
     const gpa = comp.gpa;
     const io = comp.io;
@@ -351,146 +363,45 @@ pub fn flush(
     const sub_prog_node = prog_node.start("MachO Flush", 0);
     defer sub_prog_node.end();
 
-    const zcu_obj_path: ?Path = p: {
-        const zcu = comp.zcu orelse break :p null;
-        const llvm_object = zcu.llvm_object orelse break :p null;
-        break :p try comp.resolveEmitPathFlush(arena, .temp, llvm_object.out_bin_basename);
-    };
-
     // --verbose-link
     if (comp.verbose_link) try self.dumpArgv(comp);
 
     if (self.getZigObject()) |zo| try zo.flush(self, tid);
-    if (self.base.isStaticLib()) return relocatable.flushStaticLib(self, comp, zcu_obj_path);
-    if (self.base.isObject()) return relocatable.flushObject(self, comp, zcu_obj_path);
+    if (self.base.isStaticLib()) return relocatable.flushStaticLib(self, comp);
+    if (self.base.isObject()) return relocatable.flushObject(self, comp);
 
-    var positionals = std.array_list.Managed(link.Input).init(gpa);
-    defer positionals.deinit();
-
-    try positionals.ensureUnusedCapacity(comp.link_inputs.len);
-
-    for (comp.link_inputs) |link_input| switch (link_input) {
-        .dso => continue, // handled below
-        .object, .archive => positionals.appendAssumeCapacity(link_input),
-        .res => unreachable,
-    };
-
-    // This is a set of object files emitted by clang in a single `build-exe` invocation.
-    // For instance, the implicit `a.o` as compiled by `zig build-exe a.c` will end up
-    // in this set.
-    try positionals.ensureUnusedCapacity(comp.c_objects.items.len);
-    for (comp.c_objects.items) |c_object| {
-        positionals.appendAssumeCapacity(try link.openObjectInput(io, diags, c_object.status.success.object_path));
+    for (self.all_inputs.items) |input| {
+        self.classifyInputFile(input) catch |err|
+            diags.addParseError(input.path(), "failed to read input file: {t}", .{err});
     }
-
-    if (zcu_obj_path) |path| try positionals.append(try link.openObjectInput(io, diags, path));
-
-    if (comp.config.any_sanitize_thread) {
-        try positionals.append(try link.openObjectInput(io, diags, comp.tsan_lib.?.full_object_path));
-    }
-
-    if (comp.config.any_fuzz) {
-        try positionals.append(try link.openArchiveInput(io, diags, comp.fuzzer_lib.?.full_object_path, false, false));
-    }
-
-    if (comp.ubsan_rt_lib) |crt_file| {
-        const path = crt_file.full_object_path;
-        self.classifyInputFile(try link.openArchiveInput(io, diags, path, false, false)) catch |err|
-            diags.addParseError(path, "failed to parse archive: {s}", .{@errorName(err)});
-    } else if (comp.ubsan_rt_obj) |crt_file| {
-        const path = crt_file.full_object_path;
-        self.classifyInputFile(try link.openObjectInput(io, diags, path)) catch |err|
-            diags.addParseError(path, "failed to parse archive: {s}", .{@errorName(err)});
-    }
-
-    for (positionals.items) |link_input| {
-        self.classifyInputFile(link_input) catch |err|
-            diags.addParseError(link_input.path(), "failed to read input file: {t}", .{err});
-    }
-
-    var system_libs = std.array_list.Managed(SystemLib).init(gpa);
-    defer system_libs.deinit();
 
     // frameworks
-    try system_libs.ensureUnusedCapacity(self.frameworks.len);
-    for (self.frameworks) |info| {
-        system_libs.appendAssumeCapacity(.{
-            .needed = info.needed,
-            .weak = info.weak,
-            .path = info.path,
-        });
-    }
-
-    // libc++ dep
-    if (comp.config.link_libcpp) {
-        try system_libs.ensureUnusedCapacity(2);
-        system_libs.appendAssumeCapacity(.{ .path = comp.libcxxabi_static_lib.?.full_object_path });
-        system_libs.appendAssumeCapacity(.{ .path = comp.libcxx_static_lib.?.full_object_path });
-    }
-
-    const is_exe_or_dyn_lib = comp.config.output_mode == .Exe or
-        (comp.config.output_mode == .Lib and comp.config.link_mode == .dynamic);
-
-    if (comp.config.link_libc and is_exe_or_dyn_lib) {
-        if (comp.zigc_static_lib) |zigc| {
-            const path = zigc.full_object_path;
-            self.classifyInputFile(try link.openArchiveInput(io, diags, path, false, false)) catch |err|
-                diags.addParseError(path, "failed to parse archive: {s}", .{@errorName(err)});
-        }
-    }
-
-    // libc/libSystem dep
-    self.resolveLibSystem(arena, comp, &system_libs) catch |err| switch (err) {
-        error.MissingLibSystem => {}, // already reported
-        else => |e| return diags.fail("failed to resolve libSystem: {s}", .{@errorName(e)}),
-    };
-
-    for (comp.link_inputs) |link_input| switch (link_input) {
-        .object, .archive => continue,
-        .res => unreachable,
-        .dso => {
-            self.classifyInputFile(link_input) catch |err|
-                diags.addParseError(link_input.path(), "failed to parse input file: {t}", .{err});
-        },
-    };
-
-    for (system_libs.items) |lib| {
-        switch (Compilation.classifyFileExt(lib.path.sub_path)) {
+    for (self.frameworks) |framework| {
+        switch (Compilation.classifyFileExt(framework.path.sub_path)) {
             .shared_library => {
-                const dso_input = try link.openDsoInput(io, diags, lib.path, lib.needed, lib.weak, lib.reexport);
+                const dso_input = try link.openDsoInput(io, diags, framework.path, framework.needed, framework.weak, false);
                 self.classifyInputFile(dso_input) catch |err|
-                    diags.addParseError(lib.path, "failed to parse input file: {s}", .{@errorName(err)});
+                    diags.addParseError(framework.path, "failed to parse input file: {s}", .{@errorName(err)});
             },
             .static_library => {
-                const archive_input = try link.openArchiveInput(io, diags, lib.path, lib.must_link, lib.hidden);
+                const archive_input = try link.openArchiveInput(io, diags, framework.path, false, false);
                 self.classifyInputFile(archive_input) catch |err|
-                    diags.addParseError(lib.path, "failed to parse input file: {s}", .{@errorName(err)});
+                    diags.addParseError(framework.path, "failed to parse input file: {s}", .{@errorName(err)});
             },
             else => {
                 dso: {
-                    const dso_input = link.openDsoInput(io, diags, lib.path, lib.needed, lib.weak, lib.reexport) catch break :dso;
+                    const dso_input = link.openDsoInput(io, diags, framework.path, framework.needed, framework.weak, false) catch break :dso;
                     self.classifyInputFile(dso_input) catch break :dso;
                     continue;
                 }
                 ar: {
-                    const archive_input = link.openArchiveInput(io, diags, lib.path, lib.must_link, lib.hidden) catch break :ar;
+                    const archive_input = link.openArchiveInput(io, diags, framework.path, false, false) catch break :ar;
                     self.classifyInputFile(archive_input) catch break :ar;
                     continue;
                 }
-                diags.addParseError(lib.path, "unknown file extension", .{});
+                diags.addParseError(framework.path, "unknown file extension", .{});
             },
         }
-    }
-
-    // Finally, link against compiler_rt.
-    if (comp.compiler_rt_lib) |crt_file| {
-        const path = crt_file.full_object_path;
-        self.classifyInputFile(try link.openArchiveInput(io, diags, path, false, false)) catch |err|
-            diags.addParseError(path, "failed to parse archive: {s}", .{@errorName(err)});
-    } else if (comp.compiler_rt_obj) |crt_file| {
-        const path = crt_file.full_object_path;
-        self.classifyInputFile(try link.openObjectInput(io, diags, path)) catch |err|
-            diags.addParseError(path, "failed to parse archive: {s}", .{@errorName(err)});
     }
 
     try self.parseInputFiles();
@@ -666,9 +577,8 @@ fn dumpArgv(self: *MachO, comp: *Compilation) !void {
         for (comp.link_inputs) |link_input| switch (link_input) {
             .object, .archive => |obj| try argv.append(try obj.path.toString(arena)),
             .res => |res| try argv.append(try res.path.toString(arena)),
-            .dso => |dso| {
-                try argv.append(try dso.path.toString(arena));
-            },
+            .dso => |dso| try argv.append(try dso.path.toString(arena)),
+            .tbd => |tbd| try argv.append(try tbd.path.toString(arena)),
         };
 
         for (comp.c_objects.items) |c_object| {
@@ -754,7 +664,7 @@ fn dumpArgv(self: *MachO, comp: *Compilation) !void {
         }
 
         for (comp.link_inputs) |link_input| switch (link_input) {
-            .dso => continue, // handled below
+            .dso, .tbd => continue, // handled below
             .res => unreachable, // windows only
             .object, .archive => |obj| {
                 if (obj.must_link) try argv.append("-force_load"); // TODO: verify this
@@ -788,7 +698,7 @@ fn dumpArgv(self: *MachO, comp: *Compilation) !void {
         for (comp.link_inputs) |link_input| switch (link_input) {
             .object, .archive => continue, // handled above
             .res => unreachable, // windows only
-            .dso => |dso| {
+            inline .dso, .tbd => |dso| {
                 try argv.ensureUnusedCapacity(2);
                 if (dso.needed) {
                     argv.appendAssumeCapacity("-needed-l");
@@ -834,46 +744,6 @@ fn dumpArgv(self: *MachO, comp: *Compilation) !void {
     }
 
     try Compilation.dumpArgv(io, argv.items);
-}
-
-/// TODO delete this, libsystem must be resolved when setting up the compilation pipeline
-pub fn resolveLibSystem(
-    self: *MachO,
-    arena: Allocator,
-    comp: *Compilation,
-    out_libs: anytype,
-) !void {
-    const io = comp.io;
-    const diags = &comp.link_diags;
-
-    var test_path = std.array_list.Managed(u8).init(arena);
-    var checked_paths = std.array_list.Managed([]const u8).init(arena);
-
-    success: {
-        if (self.sdk_layout) |sdk_layout| switch (sdk_layout) {
-            .sdk => {
-                const dir = try fs.path.join(arena, &.{ comp.sysroot.?, "usr", "lib" });
-                if (try accessLibPath(arena, io, &test_path, &checked_paths, dir, "System")) break :success;
-            },
-            .vendored => {
-                const dir = try comp.dirs.zig_lib.join(arena, &.{ "libc", "darwin" });
-                if (try accessLibPath(arena, io, &test_path, &checked_paths, dir, "System")) break :success;
-            },
-        };
-
-        for (self.lib_directories) |directory| {
-            if (try accessLibPath(arena, io, &test_path, &checked_paths, directory.path orelse ".", "System")) break :success;
-        }
-
-        diags.addMissingLibraryError(checked_paths.items, "unable to find libSystem system library", .{});
-        return error.MissingLibSystem;
-    }
-
-    const libsystem_path = Path.initCwd(try arena.dupe(u8, test_path.items));
-    try out_libs.append(.{
-        .needed = true,
-        .path = libsystem_path,
-    });
 }
 
 pub fn classifyInputFile(self: *MachO, input: link.Input) !void {
@@ -4497,7 +4367,7 @@ const SystemLib = struct {
                 .must_link = obj.must_link,
                 .hidden = obj.hidden,
             },
-            .dso => |dso| .{
+            inline .dso, .tbd => |dso| .{
                 .path = dso.path,
                 .needed = dso.needed,
                 .weak = dso.weak,

@@ -96,6 +96,10 @@ pub fn parse(allocator: Allocator, io: Io, libc_file: []const u8, target: *const
         log.err("sys_include_dir may not be empty", .{});
         return error.ParseError;
     }
+    if (self.crt_dir == null) {
+        log.err("crt_dir may not be empty", .{});
+        return error.ParseError;
+    }
 
     const os_tag = target.os.tag;
 
@@ -103,12 +107,6 @@ pub fn parse(allocator: Allocator, io: Io, libc_file: []const u8, target: *const
         log.err("cc_dir may not be empty for {s}", .{@tagName(os_tag)});
         return error.ParseError;
     }
-
-    if (self.crt_dir == null and !target.os.tag.isDarwin()) {
-        log.err("crt_dir may not be empty for {s}", .{@tagName(os_tag)});
-        return error.ParseError;
-    }
-
     if (self.msvc_lib_dir == null and os_tag == .windows and (target.abi == .msvc or target.abi == .itanium)) {
         log.err("msvc_lib_dir may not be empty for {s}-{s}", .{
             @tagName(os_tag),
@@ -153,7 +151,6 @@ pub fn render(self: LibCInstallation, out: *std.Io.Writer) !void {
         \\
         \\# The directory that contains `crt1.o` or `crt2.o`.
         \\# On POSIX, can be found with `cc -print-file-name=crt1.o`.
-        \\# Not needed when targeting macOS.
         \\crt_dir={s}
         \\
         \\# The directory that contains `vcruntime.lib`.
@@ -193,12 +190,9 @@ pub fn findNative(gpa: Allocator, io: Io, args: FindNativeOptions) FindError!Lib
             return error.DarwinSdkNotFound;
         defer gpa.free(sdk);
 
-        self.include_dir = try fs.path.join(gpa, &.{
-            sdk, "usr/include",
-        });
-        self.sys_include_dir = try fs.path.join(gpa, &.{
-            sdk, "usr/include",
-        });
+        self.include_dir = try fs.path.join(gpa, &.{ sdk, "usr/include" });
+        self.sys_include_dir = try fs.path.join(gpa, &.{ sdk, "usr/include" });
+        self.crt_dir = try fs.path.join(gpa, &.{ sdk, "usr/lib" });
         return self;
     } else if (is_windows) {
         const sdk = std.zig.WindowsSdk.find(gpa, io, args.target.cpu.arch, args.environ_map) catch |err| switch (err) {

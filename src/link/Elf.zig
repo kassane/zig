@@ -722,6 +722,7 @@ pub fn loadInput(self: *Elf, input: link.Input) !void {
         const argv = &self.dump_argv_list;
         switch (input) {
             .res => unreachable,
+            .tbd => unreachable,
             .object, .archive => |obj| try argv.append(gpa, try obj.path.toString(comp.arena)),
             .dso => |dso| try argv.append(gpa, try dso.path.toString(comp.arena)),
         }
@@ -729,6 +730,7 @@ pub fn loadInput(self: *Elf, input: link.Input) !void {
 
     switch (input) {
         .res => unreachable,
+        .tbd => unreachable,
         .object => |obj| try parseObject(self, obj),
         .archive => |obj| if (self.base.isStaticLib()) {
             // Ignore static library inputs when generating a static library.

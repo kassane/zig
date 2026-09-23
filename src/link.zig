@@ -1236,15 +1236,15 @@ pub const File = struct {
     }
 
     pub fn loadInput(base: *File, input: Input) anyerror!void {
-        if (base.tag == .lld) return;
-        assert(!base.post_prelink);
-
+        if (base.tag != .lld) {
+            assert(!base.post_prelink);
+        }
         switch (base.tag) {
-            inline .coff, .elf, .elf2, .macho2, .wasm, .spirv => |tag| {
+            inline else => |tag| {
                 dev.check(tag.devFeature());
                 return @as(*tag.Type(), @fieldParentPtr("base", base)).loadInput(input);
             },
-            else => {},
+            .c, .spork8, .plan9, .lld => {},
         }
     }
 
@@ -1450,6 +1450,7 @@ pub const PrelinkTask = union(enum) {
     /// Tells the linker to load a shared library, possibly one that is a
     /// GNU ld script.
     load_dso: Path,
+    load_tbd: Path,
 };
 pub const ZcuTask = union(enum) {
     /// Sent once per update, as the very first `ZcuTask` in the update. Indicates that all per-file
@@ -1504,6 +1505,7 @@ pub fn doPrelinkTask(comp: *Compilation, task: PrelinkTask) void {
                     error.AlreadyReported => return, // error reported via diags
                     else => |e| switch (input) {
                         .dso => |dso| diags.addParseError(dso.path, "failed to parse shared library: {t}", .{e}),
+                        .tbd => |tbd| diags.addParseError(tbd.path, "failed to parse tbd: {t}", .{e}),
                         .object => |obj| diags.addParseError(obj.path, "failed to parse object: {t}", .{e}),
                         .archive => |obj| diags.addParseError(obj.path, "failed to parse archive: {t}", .{e}),
                         .res => |res| diags.addParseError(res.path, "failed to parse Windows resource: {t}", .{e}),
@@ -1525,34 +1527,72 @@ pub fn doPrelinkTask(comp: *Compilation, task: PrelinkTask) void {
                 assert(mem.startsWith(u8, flag, "-l"));
                 const lib_name = flag["-l".len..];
                 switch (comp.config.link_mode) {
-                    .dynamic => {
-                        const dso_path = Path.initCwd(
-                            std.fmt.allocPrint(comp.arena, "{s}" ++ sep ++ "{s}{s}{s}", .{
-                                crt_dir, target.libPrefix(), lib_name, target.dynamicLibSuffix(),
-                            }) catch return diags.setAllocFailure(),
-                        );
-                        base.openLoadDso(dso_path, .{
+                    .dynamic => loaded: {
+                        if (target.os.tag.isDarwin()) {
+                            // Prefer .tbd over .dylib.
+                            const tbd_path: Path = .initCwd(std.fmt.allocPrint(
+                                comp.arena,
+                                "{s}" ++ sep ++ "{s}{s}.tbd",
+                                .{ crt_dir, target.libPrefix(), lib_name },
+                            ) catch return diags.setAllocFailure());
+                            if (tbd_path.root_dir.handle.openFile(io, tbd_path.sub_path, .{})) |file| {
+                                errdefer file.close(io);
+                                base.loadInput(.{ .tbd = .{
+                                    .path = tbd_path,
+                                    .file = file,
+                                    .needed = false,
+                                    .weak = false,
+                                    .reexport = false,
+                                } }) catch |err| switch (err) {
+                                    error.AlreadyReported => return,
+                                    error.Canceled => io.recancel(),
+                                    else => |e| diags.addParseError(tbd_path, "failed to parse tbd: {t}", .{e}),
+                                };
+                                break :loaded;
+                            } else |err| switch (err) {
+                                error.FileNotFound => {},
+                                error.Canceled => io.recancel(),
+                                else => |e| diags.addParseError(tbd_path, "failed to parse tbd: {t}", .{e}),
+                            }
+                        }
+
+                        // Try dynamic library.
+                        const dso_path: Path = .initCwd(std.fmt.allocPrint(
+                            comp.arena,
+                            "{s}" ++ sep ++ "{s}{s}{s}",
+                            .{ crt_dir, target.libPrefix(), lib_name, target.dynamicLibSuffix() },
+                        ) catch return diags.setAllocFailure());
+                        if (base.openLoadDso(dso_path, .{
                             .preferred_mode = .dynamic,
                             .search_strategy = .paths_first,
-                        }) catch |err| switch (err) {
-                            error.FileNotFound => {
-                                // Also try static.
-                                const archive_path = Path.initCwd(
-                                    std.fmt.allocPrint(comp.arena, "{s}" ++ sep ++ "{s}{s}{s}", .{
-                                        crt_dir, target.libPrefix(), lib_name, target.staticLibSuffix(),
-                                    }) catch return diags.setAllocFailure(),
-                                );
-                                base.openLoadArchiveQuery(archive_path, .{
-                                    .preferred_mode = .dynamic,
-                                    .search_strategy = .paths_first,
-                                }) catch |archive_err| switch (archive_err) {
-                                    error.AlreadyReported => return, // error reported via diags
-                                    else => |e| diags.addParseError(dso_path, "failed to parse archive {f}: {s}", .{ archive_path, @errorName(e) }),
-                                };
-                            },
-                            error.AlreadyReported => return, // error reported via diags
+                        })) {
+                            break :loaded;
+                        } else |err| switch (err) {
+                            error.FileNotFound => {},
+                            error.AlreadyReported => return,
+                            error.Canceled => io.recancel(),
                             else => |e| diags.addParseError(dso_path, "failed to parse shared library: {s}", .{@errorName(e)}),
-                        };
+                        }
+
+                        // Also try static.
+                        const archive_path = Path.initCwd(
+                            std.fmt.allocPrint(comp.arena, "{s}" ++ sep ++ "{s}{s}{s}", .{
+                                crt_dir, target.libPrefix(), lib_name, target.staticLibSuffix(),
+                            }) catch return diags.setAllocFailure(),
+                        );
+                        if (base.openLoadArchiveQuery(archive_path, .{
+                            .preferred_mode = .dynamic,
+                            .search_strategy = .paths_first,
+                        })) {
+                            break :loaded;
+                        } else |archive_err| switch (archive_err) {
+                            error.FileNotFound => {},
+                            error.AlreadyReported => return,
+                            error.Canceled => io.recancel(),
+                            else => |e| diags.addParseError(archive_path, "failed to parse archive {f}: {s}", .{ archive_path, @errorName(e) }),
+                        }
+
+                        diags.addError("failed to find library '{s}'", .{lib_name});
                     },
                     .static => {
                         const path = Path.initCwd(
@@ -1646,6 +1686,28 @@ pub fn doPrelinkTask(comp: *Compilation, task: PrelinkTask) void {
                 error.AlreadyReported => return, // error reported via link_diags
                 else => |e| diags.addParseError(path, "failed to parse shared library: {s}", .{@errorName(e)}),
             };
+        },
+        .load_tbd => |path| {
+            const prog_node = comp.link_prog_node.start("Parse Shared Library Stub", 0);
+            defer prog_node.end();
+            if (path.root_dir.handle.openFile(io, path.sub_path, .{})) |file| {
+                errdefer file.close(io);
+                base.loadInput(.{ .tbd = .{
+                    .path = path,
+                    .file = file,
+                    .needed = false,
+                    .weak = false,
+                    .reexport = false,
+                } }) catch |err| switch (err) {
+                    error.AlreadyReported => return,
+                    error.Canceled => io.recancel(),
+                    else => |e| diags.addParseError(path, "failed to parse tbd: {t}", .{e}),
+                };
+            } else |err| switch (err) {
+                error.FileNotFound => {},
+                error.Canceled => io.recancel(),
+                else => |e| diags.addParseError(path, "failed to parse tbd: {t}", .{e}),
+            }
         },
     }
 }
@@ -1873,6 +1935,8 @@ pub const Input = union(enum) {
     /// May not be a GNU ld script. Those are resolved when converting from
     /// `UnresolvedInput` to `Input` values.
     dso: Dso,
+    /// Only possible when targeting Darwin.
+    tbd: Tbd,
 
     pub const Object = struct {
         path: Path,
@@ -1897,24 +1961,32 @@ pub const Input = union(enum) {
         pub const FallbackSoname = enum { basename, full_path };
     };
 
+    pub const Tbd = struct {
+        path: Path,
+        file: Io.File,
+        needed: bool,
+        weak: bool,
+        reexport: bool,
+    };
+
     pub fn path(input: Input) Path {
         return switch (input) {
             .object, .archive => |obj| obj.path,
-            inline .res, .dso => |x| x.path,
+            inline .res, .dso, .tbd => |x| x.path,
         };
     }
 
     pub fn pathAndFile(input: Input) struct { Path, Io.File } {
         return switch (input) {
             .object, .archive => |obj| .{ obj.path, obj.file },
-            inline .res, .dso => |x| .{ x.path, x.file },
+            inline .res, .dso, .tbd => |x| .{ x.path, x.file },
         };
     }
 
     pub fn taskName(input: Input) []const u8 {
         return switch (input) {
             .object, .archive => |obj| obj.path.basename(),
-            inline .res, .dso => |x| x.path.basename(),
+            inline .res, .dso, .tbd => |x| x.path.basename(),
         };
     }
 };
@@ -1946,6 +2018,15 @@ pub fn hashInputs(man: *Cache.Manifest, link_inputs: []const Input) !void {
                 man.hash.add(dso.weak);
                 man.hash.add(dso.reexport);
                 man.hash.add(dso.fallback_soname);
+            },
+            .tbd => |tbd| {
+                _ = try man.addInputPath(tbd.path, .{
+                    .handle = .{ .file = tbd.file },
+                    .request_handle = true,
+                });
+                man.hash.add(tbd.needed);
+                man.hash.add(tbd.weak);
+                man.hash.add(tbd.reexport);
             },
         }
     }
@@ -2236,16 +2317,14 @@ fn resolveLibInput(
             else => |e| fatal("searching for tbd library {qf}: {t}", .{ test_path, e }),
         };
         errdefer file.close(io);
-        return finishResolveLibInput(
-            io,
-            resolved_inputs,
-            archive_dedup,
-            test_path,
-            file,
-            link_mode,
-            name_query.query,
-            .basename,
-        );
+        resolved_inputs.appendAssumeCapacity(.{ .tbd = .{
+            .path = test_path,
+            .file = file,
+            .needed = name_query.query.needed,
+            .weak = name_query.query.weak,
+            .reexport = name_query.query.reexport,
+        } });
+        return .ok;
     }
 
     {
@@ -2700,7 +2779,7 @@ pub fn anyObjectInputs(inputs: []const Input) bool {
 pub fn countObjectInputs(inputs: []const Input) usize {
     var count: usize = 0;
     for (inputs) |input| switch (input) {
-        .dso => continue,
+        .dso, .tbd => continue,
         .res, .object, .archive => count += 1,
     };
     return count;
@@ -2710,7 +2789,7 @@ pub fn countObjectInputs(inputs: []const Input) usize {
 pub fn firstObjectInput(inputs: []const Input) ?Input.Object {
     for (inputs) |input| switch (input) {
         .object, .archive => |obj| return obj,
-        .res, .dso => continue,
+        .res, .dso, .tbd => continue,
     };
     return null;
 }
