@@ -26,6 +26,7 @@ const Args = struct {
     enable_wine: bool,
     enable_wasmtime: bool,
     enable_darling: bool,
+    quiet: bool,
 
     fn deinit(args: *Args, gpa: std.mem.Allocator) void {
         args.targets.deinit(gpa);
@@ -98,6 +99,8 @@ pub fn runServer(runner: *Runner) ProtocolError {
                                     runner.args.enable_wasmtime = true;
                                 } else if (std.mem.eql(u8, string, "-fdarling")) {
                                     runner.args.enable_darling = true;
+                                } else if (std.mem.eql(u8, string, "--quiet")) {
+                                    runner.args.quiet = true;
                                 },
                                 .zig => unreachable,
                                 .lib => unreachable,
@@ -463,10 +466,10 @@ fn testOne(runner: *Runner, test_index: u32) TestError!void {
         .target_query = target_query,
         .manifest_sr = .init(&manifest_fr.interface, runner.gpa, &runner.eb_wip, src_path_string: {
             var path_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+
             const src_path = src_path: {
-                break :src_path path_buffer[0 .. std.Io.Dir.readLinkAbsolute(
+                break :src_path path_buffer[0 .. manifest_file.realPath(
                     runner.io,
-                    try runner.arena.allocator().print("/proc/self/fd/{d}", .{manifest_file.handle}),
                     &path_buffer,
                 ) catch |err| switch (err) {
                     error.Canceled => |e| return e,
@@ -839,12 +842,9 @@ fn spawnCompiler(
         .selfhosted => try argv.append(gpa, "-fno-llvm"),
         .llvm => try argv.append(gpa, "-fllvm"),
         .cbe => try argv.append(gpa, "-ofmt=c"),
-    } else try argv.appendSlice(gpa, &.{ "-I", path_buffer[0 .. std.Io.Dir.readLinkAbsolute(
-        runner.io,
-        try arena.print("/proc/self/fd/{d}", .{(runner.args.lib_dir orelse
-            return runner.fail("\"--lib=path/to/lib\" arg required with cbe", .{})).handle}),
-        &path_buffer,
-    ) catch |err| switch (err) {
+    } else try argv.appendSlice(gpa, &.{ "-I", path_buffer[0 .. (runner.args.lib_dir orelse
+        return runner.fail("\"--lib=path/to/lib\" arg required with cbe", .{}))
+        .realPath(runner.io, &path_buffer) catch |err| switch (err) {
         error.Canceled => |e| return e,
         else => |e| return runner.fail("unable to get lib path: {t}", .{e}),
     }] });
@@ -1034,8 +1034,8 @@ const Compiler = struct {
         )) {
             .bad_dl, .bad_os_or_cpu => {
                 // This binary cannot be executed on this host.
-                std.log.warn("skipping execution because host '{s}' cannot execute binaries for " ++
-                    "foreign target '{s}'", .{
+                if (!runner.args.quiet) std.log.warn("skipping execution because host {q} cannot " ++
+                    "execute binaries for foreign target {q}", .{
                     try runner.host.zigTriple(arena), comp.target.triple,
                 });
                 return;
@@ -1080,12 +1080,12 @@ const Compiler = struct {
                     .progress_node = run_prog_node,
                 }) catch |err| if (executor) |_| {
                     // Chances are the foreign executor isn't available. Skip this evaluation.
-                    std.log.warn(
-                        "skipping execution of '{s}' via executor for foreign target '{s}': {t}",
+                    if (!runner.args.quiet) std.log.warn(
+                        "skipping execution of {q} via executor for foreign target {q}: {t}",
                         .{ bin_path, comp.target.triple, err },
                     );
                     return;
-                } else return runner.fail("unable to run the generated executable '{s}': {t}", .{
+                } else return runner.fail("unable to run the generated executable {q}: {t}", .{
                     bin_path, err,
                 });
                 defer {
@@ -1097,7 +1097,7 @@ const Compiler = struct {
                         .errors, .lldb => unreachable,
                         .stdout => {
                             if (code != 0) return runner.fail(
-                                "generated executable '{s}' failed with code {d}",
+                                "generated executable {q} failed with code {d}",
                                 .{ bin_path, code },
                             );
                             std.testing.expectEqualStrings(
@@ -1125,20 +1125,20 @@ const Compiler = struct {
                         },
                     },
                     .signal => |sig| return runner.fail(
-                        "generated executable '{s}' terminated with signal {t}",
+                        "generated executable {q} terminated with signal {t}",
                         .{ bin_path, sig },
                     ),
                     .stopped => |sig| return runner.fail(
-                        "generated executable '{s}' stopped with signal {t}",
+                        "generated executable {q} stopped with signal {t}",
                         .{ bin_path, sig },
                     ),
                     .unknown => return runner.fail(
-                        "generated executable '{s}' terminated unexpectedly",
+                        "generated executable {q} terminated unexpectedly",
                         .{bin_path},
                     ),
                 }
                 if (executor == null and result.stderr.len > 0) {
-                    std.log.err("generated executable '{s}' had unexpected stderr:\n{s}", .{
+                    std.log.err("generated executable {q} had unexpected stderr:\n{s}", .{
                         bin_path, result.stderr,
                     });
                 }
@@ -1247,6 +1247,7 @@ const ClientArgs = struct {
     enable_wine: bool,
     enable_wasmtime: bool,
     enable_darling: bool,
+    quiet: bool,
 };
 pub fn main(init: std.process.Init) (std.mem.Allocator.Error || std.Io.Cancelable)!u8 {
     const fatal = struct {
@@ -1272,6 +1273,7 @@ pub fn main(init: std.process.Init) (std.mem.Allocator.Error || std.Io.Cancelabl
         .enable_wine = false,
         .enable_wasmtime = false,
         .enable_darling = false,
+        .quiet = false,
     };
     defer args.targets.deinit(init.gpa);
 
@@ -1300,6 +1302,7 @@ pub fn main(init: std.process.Init) (std.mem.Allocator.Error || std.Io.Cancelabl
                     .enable_wine = false,
                     .enable_wasmtime = false,
                     .enable_darling = false,
+                    .quiet = false,
                 },
                 .host = std.zig.system.resolveTargetQuery(init.io, .{}) catch |err| switch (err) {
                     error.Canceled => |e| return e,
@@ -1328,17 +1331,17 @@ pub fn main(init: std.process.Init) (std.mem.Allocator.Error || std.Io.Cancelabl
                 },
             }
         } else if (std.mem.eql(u8, arg, "--zig")) {
-            zig_path_arg = arg_it.next() orelse fatal("missing arg after '{s}'", .{arg});
+            zig_path_arg = arg_it.next() orelse fatal("missing arg after {q}", .{arg});
         } else if (std.mem.cutPrefix(u8, arg, "--zig=")) |zig_path| {
             zig_path_arg = zig_path;
         } else if (std.mem.eql(u8, arg, "--lib")) {
-            lib_path_arg = arg_it.next() orelse fatal("missing arg after '{s}'", .{arg});
+            lib_path_arg = arg_it.next() orelse fatal("missing arg after {q}", .{arg});
         } else if (std.mem.cutPrefix(u8, arg, "--lib=")) |lib_path| {
             lib_path_arg = lib_path;
         } else if (std.mem.eql(u8, arg, "--target")) {
             try args.targets.append(
                 init.gpa,
-                try arena.dupe(u8, arg_it.next() orelse fatal("missing arg after '{s}'", .{arg})),
+                try arena.dupe(u8, arg_it.next() orelse fatal("missing arg after {q}", .{arg})),
             );
         } else if (std.mem.cutPrefix(u8, arg, "--target=")) |target| {
             try args.targets.append(init.gpa, try arena.dupe(u8, target));
@@ -1352,8 +1355,10 @@ pub fn main(init: std.process.Init) (std.mem.Allocator.Error || std.Io.Cancelabl
             args.enable_wasmtime = true;
         } else if (std.mem.eql(u8, arg, "-fdarling")) {
             args.enable_darling = true;
+        } else if (std.mem.eql(u8, arg, "--quiet")) {
+            args.quiet = true;
         } else {
-            if (test_path_arg) |_| fatal("unknown arg '{s}'", .{arg});
+            if (test_path_arg) |_| fatal("unknown arg {q}", .{arg});
             test_path_arg = arg;
         }
     }
@@ -1506,6 +1511,12 @@ fn runClient(
     if (args.enable_darling) {
         try argv.append(gpa, @backingInt(Arg.string));
         try argv.appendSlice(gpa, "-fdarling");
+        try argv.append(gpa, 0);
+    }
+
+    if (args.quiet) {
+        try argv.append(gpa, @backingInt(Arg.string));
+        try argv.appendSlice(gpa, "--quiet");
         try argv.append(gpa, 0);
     }
 

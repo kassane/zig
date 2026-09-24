@@ -284,10 +284,20 @@ pub const ReplaceError = error{
 pub const ReplaceOptions = struct {
     exe: Exe = .detect,
     argv: []const []const u8,
-    expand_arg0: ArgExpansion = .no_expand,
+
+    /// Set to change the current working directory when spawning the child process.
+    cwd: Child.Cwd = .inherit,
     /// Replaces the environment when provided. The PATH value from here is
     /// never used to resolve `argv[0]`.
     environ_map: ?*const Environ.Map = null,
+    expand_arg0: ArgExpansion = .no_expand,
+
+    inherit_dirs: []const Dir = &.{},
+    inherit_files: []const File = &.{},
+
+    /// Start child process in suspended state.
+    /// For Posix systems it's started as if SIGSTOP was sent.
+    start_suspended: bool = false,
 
     pub const Exe = union(enum) {
         /// `argv[0]` is the name of the program to execute. If it is not already a

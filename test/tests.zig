@@ -3417,6 +3417,8 @@ pub fn addIncrementalTests(
         run.addThirdPartyEnabledArgWasmtime(.{ .enabled = "-fwasmtime" });
         run.addThirdPartyEnabledArgWine(.{ .enabled = "-fwine" });
 
+        run.addArg("--quiet"); // don't fill stderr telling us about skipped tests etc
+
         tests_step.dependOn(&run.step);
     }
 

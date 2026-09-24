@@ -7028,6 +7028,11 @@ fn fileRealPathPosix(userdata: ?*anyopaque, file: File, out_buffer: []u8) File.R
 }
 
 fn realPathPosix(fd: posix.fd_t, out_buffer: []u8) File.RealPathError!usize {
+    if (fd == posix.AT.FDCWD) return processCurrentPathPosix(out_buffer) catch |err| switch (err) {
+        else => |e| return e,
+        error.CurrentDirUnlinked => return error.FileNotFound,
+        error.PathExceedsLimit => return error.NameTooLong,
+    };
     switch (native_os) {
         .dragonfly, .driverkit, .ios, .maccatalyst, .macos, .tvos, .visionos, .watchos => {
             var sufficient_buffer: [posix.PATH_MAX]u8 = undefined;
@@ -14143,6 +14148,7 @@ fn unlockStderr(userdata: ?*anyopaque) void {
 fn processCurrentPath(userdata: ?*anyopaque, buffer: []u8) process.CurrentPathError!usize {
     const t: *Threaded = @ptrCast(@alignCast(userdata));
     _ = t;
+
     if (is_windows) {
         var wtf16le_buf: [windows.PATH_MAX_WIDE:0]u16 = undefined;
         const n = windows.ntdll.RtlGetCurrentDirectory_U(wtf16le_buf.len * 2 + 2, &wtf16le_buf) / 2;
@@ -14158,12 +14164,18 @@ fn processCurrentPath(userdata: ?*anyopaque, buffer: []u8) process.CurrentPathEr
             end_index += std.unicode.wtf8Encode(codepoint, buffer[end_index..]) catch unreachable;
         }
         return end_index;
-    } else if (native_os == .wasi and !builtin.link_libc) {
+    }
+
+    if (native_os == .wasi and !builtin.link_libc) {
         if (buffer.len == 0) return error.NameTooLong;
         buffer[0] = '.';
         return 1;
     }
 
+    return processCurrentPathPosix(buffer);
+}
+
+fn processCurrentPathPosix(buffer: []u8) process.CurrentPathError!usize {
     const err: posix.E = if (builtin.link_libc) err: {
         const c_err = if (std.c.getcwd(buffer.ptr, buffer.len)) |_| 0 else std.c._errno().*;
         break :err @fromBackingInt(@intCast(c_err));
@@ -15131,12 +15143,54 @@ fn processReplace(userdata: ?*anyopaque, options: process.ReplaceOptions) proces
         });
     };
 
+    if (is_darwin) if (t.spawnDarwin(
+        .replace,
+        options.exe,
+        argv_buf.ptr,
+        options.cwd,
+        env_block,
+        options.expand_arg0,
+        .none,
+        .inherit,
+        .inherit,
+        .inherit,
+        options.inherit_dirs,
+        options.inherit_files,
+        null,
+        options.start_suspended,
+        PATH,
+    )) |_| unreachable else |err| switch (err) {
+        else => |e| return e,
+        error.WouldBlock => return error.SystemResources,
+        error.FileTooBig,
+        error.NoSpaceLeft,
+        error.PathAlreadyExists,
+        error.SymLinkLoop,
+        error.NetworkNotFound,
+        error.PipeBusy,
+        error.AntivirusInterference,
+        => return error.FileNotFound,
+        error.DeviceBusy,
+        error.NoDevice,
+        error.UnrecognizedVolume,
+        error.ReadOnlyFileSystem,
+        => return error.FileSystem,
+        error.ResourceLimitReached => return error.SystemResources,
+        error.FileLocksUnsupported => unreachable, // lock not requested
+        error.InvalidWtf8 => unreachable, // windows only
+        error.InvalidBatchScriptArg => unreachable, // windows only
+        error.InvalidUserId => unreachable, // not supported
+        error.InvalidProcessGroupId => unreachable, // passed null
+        error.InvalidName => unreachable, // windows only
+        error.ProcessAlreadyExec => unreachable, // linux only
+    };
     return posixExec(options.exe, argv_buf.ptr, options.expand_arg0, env_block, PATH);
 }
 
 const processSpawn = switch (native_os) {
     .wasi, .emscripten, .ios, .tvos, .visionos, .watchos => processSpawnUnsupported,
     .windows => processSpawnWindows,
+    .driverkit, .maccatalyst, .macos => processSpawnDarwin,
     else => processSpawnPosix,
 };
 
@@ -15741,6 +15795,56 @@ const ErrInt = @Int(.unsigned, @sizeOf(anyerror) * 8);
 fn destroyPipe(pipe: [2]posix.fd_t) void {
     if (pipe[0] != -1) closeFd(pipe[0]);
     if (pipe[0] != pipe[1]) closeFd(pipe[1]);
+}
+
+fn processSpawnDarwin(userdata: ?*anyopaque, options: process.SpawnOptions) process.SpawnError!process.Child {
+    const t: *Threaded = @ptrCast(@alignCast(userdata));
+
+    t.scanEnviron(); // for PATH
+    const PATH = t.environ.string.PATH orelse default_PATH;
+
+    var arena_allocator = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena_allocator.deinit();
+    const arena = arena_allocator.allocator();
+
+    const argv_buf = try arena.allocSentinel(?[*:0]const u8, options.argv.len, null);
+    for (options.argv, 0..) |arg, i| argv_buf[i] = (try arena.dupeSentinel(u8, arg, 0)).ptr;
+
+    const env_block = env_block: {
+        const prog_fd: i32 = -1;
+        if (options.environ_map) |environ_map| break :env_block try environ_map.createPosixBlock(arena, .{
+            .zig_progress_fd = prog_fd,
+        });
+        break :env_block try t.environ.process_environ.createPosixBlock(arena, .{
+            .zig_progress_fd = prog_fd,
+        });
+    };
+
+    const spawned = try t.spawnDarwin(
+        .spawn,
+        options.exe,
+        argv_buf.ptr,
+        options.cwd,
+        env_block,
+        options.expand_arg0,
+        options.progress_node,
+        options.stdin,
+        options.stdout,
+        options.stderr,
+        options.inherit_dirs,
+        options.inherit_files,
+        options.pgid,
+        options.start_suspended,
+        PATH,
+    );
+    return .{
+        .id = spawned.pid,
+        .thread_handle = {},
+        .stdin = spawned.stdin,
+        .stdout = spawned.stdout,
+        .stderr = spawned.stderr,
+        .request_resource_usage_statistics = options.request_resource_usage_statistics,
+    };
 }
 
 fn processSpawnWindows(userdata: ?*anyopaque, options: process.SpawnOptions) process.SpawnError!process.Child {
@@ -17037,6 +17141,7 @@ fn posixExec(
             .path = .cwd(),
         } else .search,
         .search => {
+            if (Dir.path.isAbsolute(arg0_slice)) continue :exe .{ .path = .cwd() };
             // Use of PATH_MAX here is valid as the path_buf will be passed
             // directly to the operating system in posixExecveat.
             var path_buf: [posix.PATH_MAX]u8 = undefined;
@@ -17047,7 +17152,7 @@ fn posixExec(
                 const path_len = search_path.len + arg0_slice.len + 1;
                 if (path_buf.len < path_len + 1) return error.NameTooLong;
                 @memcpy(path_buf[0..search_path.len], search_path);
-                path_buf[search_path.len] = '/';
+                path_buf[search_path.len] = Dir.path.sep;
                 @memcpy(path_buf[search_path.len + 1 ..][0..arg0_slice.len], arg0_slice);
                 path_buf[path_len] = 0;
                 const full_path = path_buf[0..path_len :0].ptr;
@@ -17065,7 +17170,7 @@ fn posixExec(
             }
             return err;
         },
-        .path => |path| return posixExecveat(path.handle, argv[0], argv, env_block),
+        .path => |path| return posixExecveat(path.handle, arg0_slice, argv, env_block),
         .file => |file| return posixExecveat(file.handle, null, argv, env_block),
         .explicit => |explicit| {
             var path_buffer: [posix.PATH_MAX]u8 = undefined;
@@ -17100,7 +17205,7 @@ pub fn posixExecveat(
                 .NOSYS => {},
             }
         }
-        var path_buffer: [posix.PATH_MAX:0]u8 = undefined;
+        var path_buffer: [posix.PATH_MAX]u8 = undefined;
         var path_len = realPathPosix(dir, &path_buffer) catch |err| switch (err) {
             else => |e| return e,
             error.InputOutput,
@@ -17125,7 +17230,9 @@ pub fn posixExecveat(
             path_len += path_slice.len;
         }
         path_buffer[path_len] = 0;
-        break :err posix.errno(posix.system.execve(&path_buffer, argv, env_block.slice.ptr));
+        break :err posix.errno(
+            posix.system.execve(path_buffer[0..path_len :0], argv, env_block.slice.ptr),
+        );
     }) {
         .FAULT => |err| return errnoBug(err), // Bad pointer parameter.
         .@"2BIG" => return error.SystemResources,
@@ -17156,6 +17263,334 @@ pub fn posixExecveat(
             else => return posix.unexpectedErrno(err),
         },
     }
+}
+
+fn spawnDarwin(
+    t: *Threaded,
+    mode: enum { spawn, replace },
+    exe: process.ReplaceOptions.Exe,
+    argv: [*:null]?[*:0]const u8,
+    cwd: process.Child.Cwd,
+    env_block: process.Environ.PosixBlock,
+    expand_arg0: process.ArgExpansion,
+    progress_node: std.Progress.Node,
+    stdin: process.SpawnOptions.StdIo,
+    stdout: process.SpawnOptions.StdIo,
+    stderr: process.SpawnOptions.StdIo,
+    inherit_dirs: []const Dir,
+    inherit_files: []const File,
+    pgid: ?posix.pid_t,
+    start_suspended: bool,
+    PATH: []const u8,
+) (process.SpawnError || process.ReplaceError)!Spawned {
+    var fa: std.c.posix_spawn_file_actions_t = undefined;
+    switch (@as(std.c.E, @fromBackingInt(@intCast(std.c.posix_spawn_file_actions_init(&fa))))) {
+        .SUCCESS => {},
+        .NOMEM => return error.SystemResources,
+        else => |err| return posix.unexpectedErrno(err),
+    }
+    defer switch (@as(std.c.E, @fromBackingInt(@intCast(
+        std.c.posix_spawn_file_actions_destroy(&fa),
+    )))) {
+        .SUCCESS => {},
+        .INVAL => recoverableOsBugDetected(),
+        else => recoverableOsBugDetected(),
+    };
+
+    var attr: std.c.posix_spawnattr_t = undefined;
+    switch (@as(std.c.E, @fromBackingInt(@intCast(std.c.posix_spawnattr_init(&attr))))) {
+        .SUCCESS => {},
+        .NOMEM => return error.SystemResources,
+        else => |err| return posix.unexpectedErrno(err),
+    }
+    defer switch (@as(std.c.E, @fromBackingInt(@intCast(std.c.posix_spawnattr_destroy(&attr))))) {
+        .SUCCESS => {},
+        .INVAL => recoverableOsBugDetected(),
+        else => recoverableOsBugDetected(),
+    };
+
+    // The child process does need to access (one end of) these pipes. However,
+    // we must initially set CLOEXEC to avoid a race condition. If another thread
+    // is racing to spawn a different child process, we don't want it to inherit
+    // these FDs in any scenario; that would mean that, for instance, calls to
+    // `poll` from the parent would not report the child's stdout as closing when
+    // expected, since the other child may retain a reference to the write end of
+    // the pipe. So, we create the pipes with CLOEXEC initially. After fork, we
+    // need to do something in the new child to make sure we preserve the reference
+    // we want. We could use `fcntl` to remove CLOEXEC from the FD, but as it
+    // turns out, we `dup2` everything anyway, so there's no need!
+    const pipe_flags: posix.O = .{ .CLOEXEC = true };
+
+    const stdin_pipe = if (stdin == .pipe) try pipe2(pipe_flags) else undefined;
+    errdefer if (stdin == .pipe) {
+        destroyPipe(stdin_pipe);
+    };
+
+    const stdout_pipe = if (stdout == .pipe) try pipe2(pipe_flags) else undefined;
+    errdefer if (stdout == .pipe) {
+        destroyPipe(stdout_pipe);
+    };
+
+    const stderr_pipe = if (stderr == .pipe) try pipe2(pipe_flags) else undefined;
+    errdefer if (stderr == .pipe) {
+        destroyPipe(stderr_pipe);
+    };
+
+    const any_ignore = (stdin == .ignore or stdout == .ignore or stderr == .ignore);
+    const dev_null_fd = if (any_ignore) try t.getDevNullFd() else undefined;
+
+    const prog_pipe: [2]posix.fd_t = if (progress_node.index != .none) pipe: {
+        // We use CLOEXEC for the same reason as in `pipe_flags`.
+        break :pipe try pipe2(.{ .NONBLOCK = true, .CLOEXEC = true });
+    } else .{ -1, -1 };
+    errdefer destroyPipe(prog_pipe);
+
+    var cwd_buffer: [posix.PATH_MAX]u8 = undefined;
+    switch (cwd) {
+        .inherit => {},
+        .dir => |dir| switch (@as(std.c.E, @fromBackingInt(@intCast(
+            std.c.posix_spawn_file_actions_addfchdir_np(&fa, dir.handle),
+        )))) {
+            .SUCCESS => {},
+            .BADF => |err| return errnoBug(err),
+            .INVAL => |err| return errnoBug(err),
+            .NOMEM => return error.SystemResources,
+            else => |err| return posix.unexpectedErrno(err),
+        },
+        .path => |path| switch (@as(std.c.E, @fromBackingInt(@intCast(
+            std.c.posix_spawn_file_actions_addchdir_np(&fa, try pathToPosix(path, &cwd_buffer)),
+        )))) {
+            .SUCCESS => {},
+            .BADF => |err| return errnoBug(err),
+            .INVAL => |err| return errnoBug(err),
+            .NAMETOOLONG => return error.NameTooLong,
+            .NOMEM => return error.SystemResources,
+            else => |err| return posix.unexpectedErrno(err),
+        },
+    }
+
+    for (inherit_dirs) |inherit_dir| switch (@as(std.c.E, @fromBackingInt(@intCast(
+        std.c.posix_spawn_file_actions_addinherit_np(&fa, inherit_dir.handle),
+    )))) {
+        .SUCCESS => {},
+        .BADF => |err| return errnoBug(err),
+        .INVAL => |err| return errnoBug(err),
+        .NOMEM => return error.SystemResources,
+        else => |err| return posix.unexpectedErrno(err),
+    };
+    for (inherit_files) |inherit_file| switch (@as(std.c.E, @fromBackingInt(@intCast(
+        std.c.posix_spawn_file_actions_addinherit_np(&fa, inherit_file.handle),
+    )))) {
+        .SUCCESS => {},
+        .BADF => |err| return errnoBug(err),
+        .INVAL => |err| return errnoBug(err),
+        .NOMEM => return error.SystemResources,
+        else => |err| return posix.unexpectedErrno(err),
+    };
+    if (prog_pipe[1] != -1) switch (@as(std.c.E, @fromBackingInt(@intCast(
+        std.c.posix_spawn_file_actions_addinherit_np(&fa, prog_pipe[1]),
+    )))) {
+        .SUCCESS => {},
+        .BADF => |err| return errnoBug(err),
+        .INVAL => |err| return errnoBug(err),
+        .NOMEM => return error.SystemResources,
+        else => |err| return posix.unexpectedErrno(err),
+    };
+    for (
+        [_]process.SpawnOptions.StdIo{ stdin, stdout, stderr },
+        [_]posix.fd_t{ stdin_pipe[0], stdout_pipe[1], stderr_pipe[1] },
+        [_]posix.fd_t{ posix.STDIN_FILENO, posix.STDOUT_FILENO, posix.STDERR_FILENO },
+    ) |stdio, pipe_fd, std_fd| switch (@as(std.c.E, @fromBackingInt(@intCast(switch (stdio) {
+        .pipe => std.c.posix_spawn_file_actions_adddup2(&fa, pipe_fd, std_fd),
+        .close => std.c.posix_spawn_file_actions_addclose(&fa, std_fd),
+        .inherit => std.c.posix_spawn_file_actions_addinherit_np(&fa, std_fd),
+        .ignore => std.c.posix_spawn_file_actions_adddup2(&fa, dev_null_fd, std_fd),
+        .file => |file| std.c.posix_spawn_file_actions_adddup2(&fa, file.handle, std_fd),
+    })))) {
+        .SUCCESS => {},
+        .BADF => |err| return errnoBug(err),
+        .INVAL => |err| return errnoBug(err),
+        .NOMEM => return error.SystemResources,
+        else => |err| return posix.unexpectedErrno(err),
+    };
+
+    if (pgid) |pid| switch (@as(std.c.E, @fromBackingInt(@intCast(
+        std.c.posix_spawnattr_setpgroup(&attr, pid),
+    )))) {
+        .SUCCESS => {},
+        .INVAL => return error.InvalidProcessGroupId,
+        else => |err| return posix.unexpectedErrno(err),
+    };
+
+    switch (@as(std.c.E, @fromBackingInt(@intCast(std.c.posix_spawnattr_setflags(&attr, .{
+        .SETPGROUP = pgid != null,
+        .SETEXEC = switch (mode) {
+            .spawn => false,
+            .replace => true,
+        },
+        .START_SUSPENDED = start_suspended,
+    }))))) {
+        .SUCCESS => {},
+        .INVAL => |err| return errnoBug(err),
+        else => |err| return posix.unexpectedErrno(err),
+    }
+
+    var pid: posix.pid_t = undefined;
+    const arg0_slice = std.mem.span(argv[0].?);
+    var path_buffer: [posix.PATH_MAX]u8 = undefined;
+    switch (err: {
+        break :err @as(std.c.E, @fromBackingInt(@intCast(exe: switch (exe) {
+            .detect => if (std.mem.findScalar(u8, arg0_slice, '/')) |_|
+                std.c.posix_spawn(&pid, arg0_slice, &fa, &attr, argv, env_block.slice.ptr)
+            else
+                continue :exe .search,
+            .search => if (!Dir.path.isAbsolute(arg0_slice)) {
+                // Use of PATH_MAX here is valid as the path_buf will be passed
+                // directly to the operating system in posixExecveat.
+                var path_buf: [posix.PATH_MAX]u8 = undefined;
+                var it = std.mem.tokenizeScalar(u8, PATH, ':');
+                var err: error{ AccessDenied, FileNotFound, NotDir } = error.FileNotFound;
+
+                while (it.next()) |search_path| {
+                    const path_len = search_path.len + arg0_slice.len + 1;
+                    if (path_buf.len < path_len + 1) return error.NameTooLong;
+                    @memcpy(path_buf[0..search_path.len], search_path);
+                    path_buf[search_path.len] = Dir.path.sep;
+                    @memcpy(path_buf[search_path.len + 1 ..][0..arg0_slice.len], arg0_slice);
+                    path_buf[path_len] = 0;
+                    const full_path = path_buf[0..path_len :0].ptr;
+                    switch (expand_arg0) {
+                        .expand => argv[0] = full_path,
+                        .no_expand => {},
+                    }
+                    switch (@as(std.c.E, @fromBackingInt(@intCast(
+                        std.c.posix_spawn(&pid, full_path, &fa, &attr, argv, env_block.slice.ptr),
+                    )))) {
+                        else => |e| break :err e,
+                        .ACCES, .NOENT, .NOTDIR => |e| switch (err) {
+                            error.AccessDenied => {},
+                            error.FileNotFound, error.NotDir => err = switch (e) {
+                                else => unreachable,
+                                .ACCES => error.AccessDenied,
+                                .NOENT => error.FileNotFound,
+                                .NOTDIR => error.NotDir,
+                            },
+                        },
+                    }
+                }
+                return err;
+            } else std.c.posix_spawn(&pid, arg0_slice, &fa, &attr, argv, env_block.slice.ptr),
+            .path => |path| if (path.handle != posix.AT.FDCWD and !Dir.path.isAbsolute(arg0_slice)) {
+                var path_len = realPathPosix(path.handle, &path_buffer) catch |err| switch (err) {
+                    else => |e| return e,
+                    error.InputOutput => return error.FileNotFound,
+                };
+                path_buffer[path_len] = Dir.path.sep;
+                path_len += 1;
+                @memcpy(path_buffer[path_len..][0..arg0_slice.len], arg0_slice);
+                path_len += arg0_slice.len;
+                path_buffer[path_len] = 0;
+                break :exe std.c.posix_spawn(
+                    &pid,
+                    path_buffer[0..path_len :0],
+                    &fa,
+                    &attr,
+                    argv,
+                    env_block.slice.ptr,
+                );
+            } else std.c.posix_spawn(&pid, arg0_slice, &fa, &attr, argv, env_block.slice.ptr),
+            .file => |file| {
+                const path_len = realPathPosix(file.handle, &path_buffer) catch |err| switch (err) {
+                    else => |e| return e,
+                    error.InputOutput => return error.FileNotFound,
+                };
+                path_buffer[path_len] = 0;
+                break :exe std.c.posix_spawn(
+                    &pid,
+                    path_buffer[0..path_len :0],
+                    &fa,
+                    &attr,
+                    argv,
+                    env_block.slice.ptr,
+                );
+            },
+            .explicit => |explicit| if (explicit.dir.handle != posix.AT.FDCWD and
+                !Dir.path.isAbsolute(explicit.path))
+            {
+                var path_len = realPathPosix(
+                    explicit.dir.handle,
+                    &path_buffer,
+                ) catch |err| switch (err) {
+                    else => |e| return e,
+                    error.InputOutput => return error.FileNotFound,
+                };
+                path_buffer[path_len] = Dir.path.sep;
+                path_len += 1;
+                @memcpy(path_buffer[path_len..][0..explicit.path.len], explicit.path);
+                path_len += explicit.path.len;
+                path_buffer[path_len] = 0;
+                break :exe std.c.posix_spawn(
+                    &pid,
+                    path_buffer[0..path_len :0],
+                    &fa,
+                    &attr,
+                    argv,
+                    env_block.slice.ptr,
+                );
+            } else std.c.posix_spawn(
+                &pid,
+                try pathToPosix(explicit.path, &path_buffer),
+                &fa,
+                &attr,
+                argv,
+                env_block.slice.ptr,
+            ),
+        })));
+    }) {
+        .SUCCESS => {},
+        .AGAIN => return error.SystemResources,
+        .INVAL => |err| return errnoBug(err),
+        .@"2BIG" => return error.SystemResources,
+        .ACCES => return error.AccessDenied,
+        .FAULT => |err| return errnoBug(err),
+        .IO => return error.FileSystem,
+        .LOOP => return error.FileSystem,
+        .NAMETOOLONG => return error.NameTooLong,
+        .NOENT => return error.FileNotFound,
+        .NOEXEC => return error.InvalidExe,
+        .NOMEM => return error.SystemResources,
+        .NOTDIR => return error.NotDir,
+        .TXTBSY => return error.FileBusy,
+        .BADARCH => return error.InvalidExe,
+        .BADF => |err| return errnoBug(err),
+        else => |err| return posix.unexpectedErrno(err),
+    }
+
+    errdefer comptime unreachable; // The child is spawned; we must not error from now on
+
+    if (stdin == .pipe) closeFd(stdin_pipe[0]);
+    if (stdout == .pipe) closeFd(stdout_pipe[1]);
+    if (stderr == .pipe) closeFd(stderr_pipe[1]);
+
+    if (prog_pipe[1] != -1) closeFd(prog_pipe[1]);
+    progress_node.setIpcFile(t, .{ .handle = prog_pipe[0], .flags = .{ .nonblocking = true } });
+
+    return .{
+        .pid = pid,
+        .err_fd = -1,
+        .stdin = switch (stdin) {
+            .pipe => .{ .handle = stdin_pipe[1], .flags = .{ .nonblocking = false } },
+            else => null,
+        },
+        .stdout = switch (stdout) {
+            .pipe => .{ .handle = stdout_pipe[0], .flags = .{ .nonblocking = false } },
+            else => null,
+        },
+        .stderr = switch (stderr) {
+            .pipe => .{ .handle = stderr_pipe[0], .flags = .{ .nonblocking = false } },
+            else => null,
+        },
+    };
 }
 
 pub const CreatePipeOptions = struct {
@@ -18469,7 +18904,7 @@ const CreateFileMapError = error{
 
 fn createFileMap(
     file: File,
-    protection: std.process.MemoryProtection,
+    protection: process.MemoryProtection,
     offset: u64,
     populate: bool,
     len: usize,
