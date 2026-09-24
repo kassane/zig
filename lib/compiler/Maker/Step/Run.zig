@@ -571,8 +571,18 @@ pub fn make(
                 .args = protocol_args.items,
             } },
         });
-        try runCommand(arena, run, run_index, maker, progress_node, argv_list.items, &.{}, &.{}, &.{}, &.{}, null, has_side_effects, output_dir_path, null);
-        if (!has_side_effects) try step.finalizeManifestAndWatch(maker, &man);
+        runCommand(arena, run, run_index, maker, progress_node, argv_list.items, &.{}, &.{}, &.{}, &.{}, null, has_side_effects, output_dir_path, null) catch |err| switch (err) {
+            else => |e| return e,
+            error.MakeFailed, error.MakeSkipped => |e| {
+                try step.setWatchInputsFromManifest(maker, &man);
+                return e;
+            },
+        };
+        if (has_side_effects) {
+            try step.setWatchInputsFromManifest(maker, &man);
+        } else {
+            try step.finalizeManifestAndWatch(maker, &man);
+        }
         return;
     }
 
@@ -591,7 +601,7 @@ pub fn make(
             .args = protocol_args.items,
         } },
     });
-    try runCommand(
+    runCommand(
         arena,
         run,
         run_index,
@@ -606,7 +616,13 @@ pub fn make(
         has_side_effects,
         tmp_dir_path,
         null,
-    );
+    ) catch |err| switch (err) {
+        else => |e| return e,
+        error.MakeFailed, error.MakeSkipped => |e| {
+            try step.setWatchInputsFromManifest(maker, &man);
+            return e;
+        },
+    };
 
     for (output_placeholders.items) |placeholder| {
         const arg = placeholder.arg_index.get(conf);
@@ -681,7 +697,11 @@ pub fn make(
         };
     }
 
-    if (!has_side_effects) try step.finalizeManifestAndWatch(maker, &man);
+    if (has_side_effects) {
+        try step.setWatchInputsFromManifest(maker, &man);
+    } else {
+        try step.finalizeManifestAndWatch(maker, &man);
+    }
 
     try populateGeneratedStdIo(maker, &conf_run, &digest);
     try populateGeneratedPaths(maker, output_placeholders.items, &digest);
