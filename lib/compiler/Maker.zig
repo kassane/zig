@@ -4125,8 +4125,7 @@ const Fork = struct {
         fork.arena_allocator = .init(gpa);
         const arena = fork.arena_allocator.allocator();
 
-        var error_bundle: std.zig.ErrorBundle.Wip = undefined;
-        try error_bundle.init(gpa);
+        var error_bundle: std.zig.ErrorBundle.Wip = try .init(gpa);
         defer error_bundle.deinit();
 
         const manifest_path = try fork.path.join(arena, Package.Manifest.basename);
@@ -4227,8 +4226,7 @@ fn loadManifest(
     errdefer manifest.deinit(gpa);
 
     if (manifest.errors.len > 0) {
-        var wip_errors: std.zig.ErrorBundle.Wip = undefined;
-        try wip_errors.init(gpa);
+        var wip_errors: std.zig.ErrorBundle.Wip = try .init(gpa);
         defer wip_errors.deinit();
 
         const src_path = try wip_errors.addString(Package.Manifest.basename);

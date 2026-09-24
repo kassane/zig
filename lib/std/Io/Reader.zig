@@ -849,26 +849,13 @@ pub fn peekDelimiterInclusive(r: *Reader, delimiter: u8) DelimiterError![]u8 {
     }
     while (true) {
         const content_len = r.end - r.seek;
-        if (r.buffer.len - content_len == 0) break;
         try fillMore(r);
+        if (r.buffer.len - content_len == 0) return error.StreamTooLong;
         const seek = r.seek;
         const contents = r.buffer[0..r.end];
         if (std.mem.findScalarPos(u8, contents, seek + content_len, delimiter)) |end| {
             return contents[seek .. end + 1];
         }
-    }
-    // It might or might not be end of stream. There is no more buffer space
-    // left to disambiguate. If `StreamTooLong` was added to `RebaseError` then
-    // this logic could be replaced by removing the exit condition from the
-    // above while loop. That error code would represent when `buffer` capacity
-    // is too small for an operation, replacing the current use of asserts.
-    var failing_writer = Writer.failing;
-    while (r.vtable.stream(r, &failing_writer, .limited(1))) |n| {
-        assert(n == 0);
-    } else |err| switch (err) {
-        error.WriteFailed => return error.StreamTooLong,
-        error.ReadFailed => |e| return e,
-        error.EndOfStream => |e| return e,
     }
 }
 

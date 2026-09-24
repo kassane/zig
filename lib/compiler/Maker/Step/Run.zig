@@ -861,6 +861,7 @@ fn waitZigTest(
                     .{ builtin.zig_version_string, body },
                 );
             },
+            .error_bundle => step.result_error_bundle = try std.zig.Server.allocErrorBundle(gpa, body),
             .test_metadata => {
                 // `metadata` would only be populated if we'd already seen a `test_metadata`, but we
                 // only request it once (and importantly, we don't re-request it if we kill and
@@ -920,10 +921,12 @@ fn waitZigTest(
                     const name = md.testName(tr_hdr.index);
                     const stderr_bytes = std.mem.trim(u8, stderr.buffered(), "\n");
                     stderr.tossBuffered();
-                    if (stderr_bytes.len == 0) {
-                        try step.addError(maker, "'{s}' failed without output", .{name});
-                    } else {
+                    if (stderr_bytes.len > 0) {
                         try step.addError(maker, "'{s}' failed:\n{s}", .{ name, stderr_bytes });
+                    } else if (step.result_error_bundle.errorMessageCount() > 0) {
+                        try step.addError(maker, "'{s}' errored", .{name});
+                    } else {
+                        try step.addError(maker, "'{s}' failed without output", .{name});
                     }
                 } else if (leak_count > 0) {
                     const name = md.testName(tr_hdr.index);
