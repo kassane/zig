@@ -354,6 +354,30 @@ pub fn flush(
     const sub_prog_node = prog_node.start("MachO Flush", 0);
     defer sub_prog_node.end();
 
+    // TODO: due to https://codeberg.org/ziglang/zig/issues/36946, we receive link inputs in a
+    // non-deterministic order. To ensure that this linker behaves deterministically, sort the
+    // inputs into a consistent order now.
+    {
+        const InputSortContext = struct {
+            fn lessThan(ctx: @This(), lhs: link.Input, rhs: link.Input) bool {
+                _ = ctx;
+                // We can't sort by full path because that could vary between runs where we still
+                // want reproducibility (e.g. the path is affected by cwd). So instead, let's sort
+                // by basename---that's good enough for our purposes since we never link two
+                // vendored libraries/objects with the same name.
+                const lhs_name = fs.path.basename(lhs.path().sub_path);
+                const rhs_name = fs.path.basename(rhs.path().sub_path);
+                return std.mem.order(u8, lhs_name, rhs_name).compare(.lt);
+            }
+        };
+        std.mem.sort(
+            link.Input,
+            self.all_inputs.items,
+            @as(InputSortContext, .{}),
+            InputSortContext.lessThan,
+        );
+    }
+
     // --verbose-link
     if (comp.verbose_link) try self.dumpArgv(comp);
 
