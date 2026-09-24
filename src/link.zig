@@ -502,7 +502,6 @@ pub const File = struct {
         /// Remove dylibs that are unreachable by the entry point or exported symbols
         dead_strip_dylibs: bool,
         frameworks: []const MachO.Framework,
-        darwin_sdk_layout: ?MachO.SdkLayout,
         /// Force load all members of static archives that implement an
         /// Objective-C class or category
         force_load_objc: bool,
@@ -1248,6 +1247,59 @@ pub const File = struct {
         }
     }
 
+    fn loadDarwinSdkSettings(base: *File, sdk_settings_path: Path) Error!void {
+        const comp = base.comp;
+        const io = comp.io;
+        const arena = comp.arena;
+        const diags = &comp.link_diags;
+
+        const contents = sdk_settings_path.root_dir.handle.readFileAlloc(
+            io,
+            sdk_settings_path.sub_path,
+            arena,
+            .limited(1024 * 1024 * 256),
+        ) catch |err| switch (err) {
+            error.OutOfMemory, error.Canceled => |e| return e,
+            else => |e| return diags.failParse(sdk_settings_path, "failed to parse Darwin SDK settings: {t}", .{e}),
+        };
+
+        const parsed = std.json.parseFromSlice(std.json.Value, arena, contents, .{}) catch |err| switch (err) {
+            error.OutOfMemory => |e| return e,
+            else => |e| return diags.failParse(sdk_settings_path, "failed to parse Darwin SDK settings: {t}", .{e}),
+        };
+        const parsed_object = switch (parsed.value) {
+            .object => |obj| obj,
+            else => return diags.failParse(sdk_settings_path, "failed to parse Darwin SDK settings: file is not a JSON object", .{}),
+        };
+
+        const version_json = parsed_object.get("MinimalDisplayName") orelse return diags.failParse(
+            sdk_settings_path,
+            "failed to parse Darwin SDK settings: 'MinimalDisplayName' missing",
+            .{},
+        );
+        const version_str: []const u8 = switch (version_json) {
+            .string => |str| str,
+            else => return diags.failParse(
+                sdk_settings_path,
+                "failed to parse Darwin SDK settings: 'MinimalDisplayName' not a string",
+                .{},
+            ),
+        };
+        const version: DarwinSdkVersion = try .parse(diags, sdk_settings_path, version_str);
+        try base.setDarwinSdkVersion(version);
+    }
+
+    fn setDarwinSdkVersion(base: *File, version: DarwinSdkVersion) Error!void {
+        assert(!base.post_prelink);
+        switch (base.tag) {
+            inline .macho, .macho2 => |tag| {
+                dev.check(tag.devFeature());
+                return @as(*tag.Type(), @fieldParentPtr("base", base)).setDarwinSdkVersion(version);
+            },
+            else => unreachable,
+        }
+    }
+
     /// Called when all linker inputs have been sent via `loadInput`. After
     /// this, `loadInput` will not be called anymore.
     pub fn prelink(base: *File) Error!void {
@@ -1451,6 +1503,7 @@ pub const PrelinkTask = union(enum) {
     /// GNU ld script.
     load_dso: Path,
     load_tbd: Path,
+    load_darwin_sdk_settings: Path,
 };
 pub const ZcuTask = union(enum) {
     /// Sent once per update, as the very first `ZcuTask` in the update. Indicates that all per-file
@@ -1589,7 +1642,7 @@ pub fn doPrelinkTask(comp: *Compilation, task: PrelinkTask) void {
                             error.FileNotFound => {},
                             error.AlreadyReported => return,
                             error.Canceled => io.recancel(),
-                            else => |e| diags.addParseError(archive_path, "failed to parse archive {f}: {s}", .{ archive_path, @errorName(e) }),
+                            else => |e| diags.addParseError(archive_path, "failed to parse archive: {s}", .{@errorName(e)}),
                         }
 
                         diags.addError("failed to find library '{s}'", .{lib_name});
@@ -1610,6 +1663,19 @@ pub fn doPrelinkTask(comp: *Compilation, task: PrelinkTask) void {
                         };
                     },
                 }
+            }
+
+            if (target.os.tag.isDarwin()) {
+                const sdk_settings_path: Path = .initCwd(std.fmt.allocPrint(
+                    comp.arena,
+                    "{s}" ++ sep ++ "SDKSettings.json",
+                    .{libc_installation.darwin_sdk_dir.?},
+                ) catch return diags.setAllocFailure());
+                base.loadDarwinSdkSettings(sdk_settings_path) catch |err| switch (err) {
+                    error.OutOfMemory => return diags.setAllocFailure(),
+                    error.Canceled => return io.recancel(),
+                    error.AlreadyReported => return,
+                };
             }
 
             if (target.os.tag == .windows and target.abi == .msvc) {
@@ -1708,6 +1774,15 @@ pub fn doPrelinkTask(comp: *Compilation, task: PrelinkTask) void {
                 error.Canceled => io.recancel(),
                 else => |e| diags.addParseError(path, "failed to parse tbd: {t}", .{e}),
             }
+        },
+        .load_darwin_sdk_settings => |path| {
+            const prog_node = comp.link_prog_node.start("Parse SDK Settings", 0);
+            defer prog_node.end();
+            base.loadDarwinSdkSettings(path) catch |err| switch (err) {
+                error.OutOfMemory => return diags.setAllocFailure(),
+                error.Canceled => return io.recancel(),
+                error.AlreadyReported => return,
+            };
         },
     }
 }
@@ -2793,3 +2868,76 @@ pub fn firstObjectInput(inputs: []const Input) ?Input.Object {
     };
     return null;
 }
+
+pub const DarwinSdkVersion = packed struct(u32) {
+    patch: u8,
+    minor: u8,
+    major: u16,
+
+    fn parse(
+        diags: *Diags,
+        /// Passed to `Diags.failParse` on error.
+        sdk_settings_path: Path,
+        version_str: []const u8,
+    ) error{AlreadyReported}!DarwinSdkVersion {
+        var it = std.mem.splitScalar(u8, version_str, '.');
+
+        const major = try parseComponent(
+            .major,
+            diags,
+            sdk_settings_path,
+            version_str,
+            it.first(),
+        );
+        const minor = if (it.next()) |component_str| try parseComponent(
+            .minor,
+            diags,
+            sdk_settings_path,
+            version_str,
+            component_str,
+        ) else return diags.failParse(
+            sdk_settings_path,
+            "failed to parse Darwin SDK version {q}: missing minor version",
+            .{version_str},
+        );
+        const patch = if (it.next()) |component_str| try parseComponent(
+            .patch,
+            diags,
+            sdk_settings_path,
+            version_str,
+            component_str,
+        ) else 0; // Apple sometimes omit the patch version
+
+        if (it.next() != null) return diags.failParse(
+            sdk_settings_path,
+            "failed to parse Darwin SDK version {q}: too many version components",
+            .{version_str},
+        );
+
+        return .{ .major = major, .minor = minor, .patch = patch };
+    }
+
+    fn parseComponent(
+        comptime component: enum { major, minor, patch },
+        diags: *Diags,
+        /// Passed to `Diags.failParse` on error.
+        sdk_settings_path: Path,
+        /// Only used for error messages.
+        version_str: []const u8,
+        component_str: []const u8,
+    ) error{AlreadyReported}!@FieldType(DarwinSdkVersion, @tagName(component)) {
+        const Int = @FieldType(DarwinSdkVersion, @tagName(component));
+        return std.fmt.parseInt(Int, component_str, 10) catch |err| switch (err) {
+            error.Overflow => return diags.failParse(
+                sdk_settings_path,
+                "failed to parse Darwin SDK version {q}: {t} version {q} too large",
+                .{ version_str, component, component_str },
+            ),
+            error.InvalidCharacter => return diags.failParse(
+                sdk_settings_path,
+                "failed to parse Darwin SDK version {q}: invalid {t} version {q}",
+                .{ version_str, component, component_str },
+            ),
+        };
+    }
+};

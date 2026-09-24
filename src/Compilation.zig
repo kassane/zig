@@ -2208,7 +2208,6 @@ pub fn create(gpa: Allocator, arena: Allocator, io: Io, diag: *CreateDiagnostic,
             .z_relro = options.linker_z_relro,
             .z_common_page_size = options.linker_z_common_page_size,
             .z_max_page_size = options.linker_z_max_page_size,
-            .darwin_sdk_layout = libc_dirs.darwin_sdk_layout,
             .frameworks = options.frameworks,
             .lib_directories = options.lib_directories,
             .framework_dirs = options.framework_dirs,
@@ -2453,10 +2452,16 @@ pub fn create(gpa: Allocator, arena: Allocator, io: Io, diag: *CreateDiagnostic,
                     // Loads the libraries provided by `target_util.libcFullLinkFlags(target)`.
                     comp.oneshot_prelink_tasks.appendAssumeCapacity(.load_host_libc);
                 } else if (target.isDarwinLibC()) {
-                    try comp.oneshot_prelink_tasks.append(gpa, .{ .load_tbd = .{
-                        .root_dir = comp.dirs.zig_lib,
-                        .sub_path = "libc" ++ fs.path.sep_str ++ "darwin" ++ fs.path.sep_str ++ "libSystem.tbd",
-                    } });
+                    try comp.oneshot_prelink_tasks.appendSlice(gpa, &.{
+                        .{ .load_tbd = .{
+                            .root_dir = comp.dirs.zig_lib,
+                            .sub_path = "libc" ++ fs.path.sep_str ++ "darwin" ++ fs.path.sep_str ++ "libSystem.tbd",
+                        } },
+                        .{ .load_darwin_sdk_settings = .{
+                            .root_dir = comp.dirs.zig_lib,
+                            .sub_path = "libc" ++ fs.path.sep_str ++ "darwin" ++ fs.path.sep_str ++ "SDKSettings.json",
+                        } },
+                    });
                     // TODO delete logic from MachO flush() and queue up tasks here instead.
                 } else if (target.isMuslLibC()) {
                     if (!std.zig.target.canBuildLibC(target)) return diag.fail(.cross_libc_unavailable);
@@ -3487,7 +3492,6 @@ fn addNonIncrementalStuffToCacheManifest(comp: *Compilation, man: *Cache.Manifes
     man.hash.add(opts.discard_local_symbols);
     man.hash.addOptional(opts.compatibility_version);
     man.hash.addOptionalBytes(opts.install_name);
-    man.hash.addOptional(opts.darwin_sdk_layout);
 
     // COFF specific stuff
     man.hash.addOptional(opts.subsystem);

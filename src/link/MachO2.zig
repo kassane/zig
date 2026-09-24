@@ -138,6 +138,10 @@ pub fn loadInput(macho: *MachO, input: link.Input) link.Error!void {
     _ = input;
     @panic("TODO");
 }
+pub fn setDarwinSdkVersion(macho: *MachO, version: link.DarwinSdkVersion) link.Error!void {
+    _ = macho;
+    std.log.err("MLUGG TODO: sdk version is '{d}.{d}.{d}'", .{ version.major, version.minor, version.patch });
+}
 pub fn prelink(macho: *MachO, prog_node: std.Progress.Node) link.Error!void {
     _ = macho;
     _ = prog_node;

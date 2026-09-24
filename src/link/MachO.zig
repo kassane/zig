@@ -106,9 +106,7 @@ has_tlv: AtomicBool = AtomicBool.init(false),
 binds_to_weak: AtomicBool = AtomicBool.init(false),
 weak_defines: AtomicBool = AtomicBool.init(false),
 
-/// Options
-/// SDK layout
-sdk_layout: ?SdkLayout,
+// Options
 /// Size of the __PAGEZERO segment.
 pagezero_size: ?u64,
 /// Minimum space for future expansion of the load commands.
@@ -134,7 +132,7 @@ compatibility_version: ?std.SemanticVersion,
 /// Entry name
 entry_name: ?[]const u8,
 platform: Platform,
-sdk_version: ?std.SemanticVersion,
+sdk_version: ?link.DarwinSdkVersion,
 /// When set to true, the linker will hoist all dylibs including system dependent dylibs.
 no_implicit_dylibs: bool = false,
 /// Whether the linker should parse and always force load objects containing ObjC in archives.
@@ -198,7 +196,6 @@ pub fn createEmpty(
         .headerpad_size = options.headerpad_size,
         .headerpad_max_install_names = options.headerpad_max_install_names,
         .dead_strip_dylibs = options.dead_strip_dylibs,
-        .sdk_layout = options.darwin_sdk_layout,
         .frameworks = options.frameworks,
         .install_name = options.install_name,
         .entitlements = options.entitlements,
@@ -210,7 +207,7 @@ pub fn createEmpty(
             .named => |name| name,
         },
         .platform = Platform.fromTarget(target),
-        .sdk_version = if (options.darwin_sdk_layout) |layout| inferSdkVersion(comp, layout) else null,
+        .sdk_version = null,
         .undefined_treatment = if (allow_shlib_undefined) .dynamic_lookup else .@"error",
         // TODO delete this, directories must instead be resolved by the frontend
         .lib_directories = options.lib_directories,
@@ -604,12 +601,20 @@ fn dumpArgv(self: *MachO, comp: *Compilation) !void {
 
         try argv.append("-platform_version");
         try argv.append(@tagName(self.platform.os_tag));
-        try argv.append(try std.fmt.allocPrint(arena, "{f}", .{self.platform.version}));
+        try argv.append(try std.fmt.allocPrint(arena, "{d}.{d}.{d}", .{
+            self.platform.version.major,
+            self.platform.version.minor,
+            self.platform.version.patch,
+        }));
 
         if (self.sdk_version) |ver| {
             try argv.append(try std.fmt.allocPrint(arena, "{d}.{d}", .{ ver.major, ver.minor }));
         } else {
-            try argv.append(try std.fmt.allocPrint(arena, "{f}", .{self.platform.version}));
+            try argv.append(try std.fmt.allocPrint(arena, "{d}.{d}.{d}", .{
+                self.platform.version.major,
+                self.platform.version.minor,
+                self.platform.version.patch,
+            }));
         }
 
         if (comp.sysroot) |syslibroot| {
@@ -4101,7 +4106,7 @@ pub const null_sym = macho.nlist_64{
 pub const Platform = struct {
     os_tag: std.Target.Os.Tag,
     abi: std.Target.Abi,
-    version: std.SemanticVersion,
+    version: link.DarwinSdkVersion,
 
     /// Using Apple's ld64 as our blueprint, `min_version` as well as `sdk_version` are set to
     /// the extracted minimum platform version.
@@ -4128,7 +4133,7 @@ pub const Platform = struct {
                         => .simulator,
                         else => .none,
                     },
-                    .version = appleVersionToSemanticVersion(cmd.minos),
+                    .version = @fromBackingInt(cmd.minos),
                 };
             },
             .VERSION_MIN_IPHONEOS,
@@ -4147,7 +4152,7 @@ pub const Platform = struct {
                         else => unreachable,
                     },
                     .abi = .none,
-                    .version = appleVersionToSemanticVersion(cmd.version),
+                    .version = @fromBackingInt(cmd.version),
                 };
             },
             else => unreachable,
@@ -4155,15 +4160,16 @@ pub const Platform = struct {
     }
 
     pub fn fromTarget(target: *const std.Target) Platform {
+        const semver = target.os.version_range.semver.min;
         return .{
             .os_tag = target.os.tag,
             .abi = target.abi,
-            .version = target.os.version_range.semver.min,
+            .version = .{
+                .major = @intCast(semver.major),
+                .minor = @intCast(semver.minor),
+                .patch = @intCast(semver.patch),
+            },
         };
-    }
-
-    pub fn toAppleVersion(plat: Platform) u32 {
-        return semanticVersionToAppleVersion(plat.version);
     }
 
     pub fn toApplePlatform(plat: Platform) macho.PLATFORM {
@@ -4182,7 +4188,7 @@ pub const Platform = struct {
     pub fn isBuildVersionCompatible(plat: Platform) bool {
         inline for (supported_platforms) |sup_plat| {
             if (sup_plat[0] == plat.os_tag and sup_plat[1] == plat.abi) {
-                return sup_plat[2] <= plat.toAppleVersion();
+                return sup_plat[2] <= @backingInt(plat.version);
             }
         }
         return false;
@@ -4191,7 +4197,7 @@ pub const Platform = struct {
     pub fn isVersionMinCompatible(plat: Platform) bool {
         inline for (supported_platforms) |sup_plat| {
             if (sup_plat[0] == plat.os_tag and sup_plat[1] == plat.abi) {
-                return sup_plat[3] <= plat.toAppleVersion();
+                return sup_plat[3] <= @backingInt(plat.version);
             }
         }
         return false;
@@ -4250,86 +4256,8 @@ const supported_platforms = [_]SupportedPlatforms{
 };
 // zig fmt: on
 
-pub inline fn semanticVersionToAppleVersion(version: std.SemanticVersion) u32 {
-    const major = version.major;
-    const minor = version.minor;
-    const patch = version.patch;
-    return (@as(u32, @intCast(major)) << 16) | (@as(u32, @intCast(minor)) << 8) | @as(u32, @intCast(patch));
-}
-
-pub inline fn appleVersionToSemanticVersion(version: u32) std.SemanticVersion {
-    return .{
-        .major = @as(u16, @truncate(version >> 16)),
-        .minor = @as(u8, @truncate(version >> 8)),
-        .patch = @as(u8, @truncate(version)),
-    };
-}
-
-fn inferSdkVersion(comp: *Compilation, sdk_layout: SdkLayout) ?std.SemanticVersion {
-    const gpa = comp.gpa;
-
-    var arena_allocator = std.heap.ArenaAllocator.init(gpa);
-    defer arena_allocator.deinit();
-    const arena = arena_allocator.allocator();
-
-    const io = comp.io;
-
-    const sdk_dir = switch (sdk_layout) {
-        .sdk => comp.sysroot.?,
-        .vendored => fs.path.join(arena, &.{ comp.dirs.zig_lib.path.?, "libc", "darwin" }) catch return null,
-    };
-    if (readSdkVersionFromSettings(arena, io, sdk_dir)) |ver| {
-        return parseSdkVersion(ver);
-    } else |_| {
-        // Read from settings should always succeed when vendored.
-        // TODO: convert to fatal linker error
-        if (sdk_layout == .vendored) @panic("zig installation bug: unable to parse SDK version");
-    }
-
-    // infer from pathname
-    const stem = fs.path.stem(sdk_dir);
-    const start = for (stem, 0..) |c, i| {
-        if (std.ascii.isDigit(c)) break i;
-    } else stem.len;
-    const end = for (stem[start..], start..) |c, i| {
-        if (std.ascii.isDigit(c) or c == '.') continue;
-        break i;
-    } else stem.len;
-    return parseSdkVersion(stem[start..end]);
-}
-
-// Official Apple SDKs ship with a `SDKSettings.json` located at the top of SDK fs layout.
-// Use property `MinimalDisplayName` to determine version.
-// The file/property is also available with vendored libc.
-fn readSdkVersionFromSettings(arena: Allocator, io: Io, dir: []const u8) ![]const u8 {
-    const sdk_path = try fs.path.join(arena, &.{ dir, "SDKSettings.json" });
-    const contents = try Io.Dir.cwd().readFileAlloc(io, sdk_path, arena, .limited(std.math.maxInt(u16)));
-    const parsed = try std.json.parseFromSlice(std.json.Value, arena, contents, .{});
-    if (parsed.value.object.get("MinimalDisplayName")) |ver| return ver.string;
-    return error.SdkVersionFailure;
-}
-
-// Versions reported by Apple aren't exactly semantically valid as they usually omit
-// the patch component, so we parse SDK value by hand.
-fn parseSdkVersion(raw: []const u8) ?std.SemanticVersion {
-    var parsed: std.SemanticVersion = .{
-        .major = 0,
-        .minor = 0,
-        .patch = 0,
-    };
-
-    const parseNext = struct {
-        fn parseNext(it: anytype) ?u16 {
-            const nn = it.next() orelse return null;
-            return std.fmt.parseInt(u16, nn, 10) catch null;
-        }
-    }.parseNext;
-
-    var it = std.mem.splitAny(u8, raw, ".");
-    parsed.major = parseNext(&it) orelse return null;
-    parsed.minor = parseNext(&it) orelse return null;
-    parsed.patch = parseNext(&it) orelse 0;
-    return parsed;
+pub fn setDarwinSdkVersion(self: *MachO, version: link.DarwinSdkVersion) link.Error!void {
+    self.sdk_version = version;
 }
 
 /// When allocating, the ideal_capacity is calculated by
@@ -4376,8 +4304,6 @@ const SystemLib = struct {
         };
     }
 };
-
-pub const SdkLayout = std.zig.LibCDirs.DarwinSdkLayout;
 
 const UndefinedTreatment = enum {
     @"error",
