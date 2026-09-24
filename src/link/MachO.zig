@@ -119,10 +119,6 @@ dead_strip_dylibs: bool,
 undefined_treatment: UndefinedTreatment,
 /// TODO: delete this, libraries need to be resolved by the frontend instead
 lib_directories: []const Directory,
-/// Resolved list of framework search directories
-framework_dirs: []const []const u8,
-/// List of input frameworks
-frameworks: []const Framework,
 /// Install name for the dylib.
 /// TODO: unify with soname
 install_name: ?[]const u8,
@@ -196,7 +192,6 @@ pub fn createEmpty(
         .headerpad_size = options.headerpad_size,
         .headerpad_max_install_names = options.headerpad_max_install_names,
         .dead_strip_dylibs = options.dead_strip_dylibs,
-        .frameworks = options.frameworks,
         .install_name = options.install_name,
         .entitlements = options.entitlements,
         .compatibility_version = options.compatibility_version,
@@ -211,7 +206,6 @@ pub fn createEmpty(
         .undefined_treatment = if (allow_shlib_undefined) .dynamic_lookup else .@"error",
         // TODO delete this, directories must instead be resolved by the frontend
         .lib_directories = options.lib_directories,
-        .framework_dirs = options.framework_dirs,
         .force_load_objc = options.force_load_objc,
         .discard_local_symbols = options.discard_local_symbols,
     };
@@ -370,35 +364,6 @@ pub fn flush(
     for (self.all_inputs.items) |input| {
         self.classifyInputFile(input) catch |err|
             diags.addParseError(input.path(), "failed to read input file: {t}", .{err});
-    }
-
-    // frameworks
-    for (self.frameworks) |framework| {
-        switch (Compilation.classifyFileExt(framework.path.sub_path)) {
-            .shared_library => {
-                const dso_input = try link.openDsoInput(io, diags, framework.path, framework.needed, framework.weak, false);
-                self.classifyInputFile(dso_input) catch |err|
-                    diags.addParseError(framework.path, "failed to parse input file: {s}", .{@errorName(err)});
-            },
-            .static_library => {
-                const archive_input = try link.openArchiveInput(io, diags, framework.path, false, false);
-                self.classifyInputFile(archive_input) catch |err|
-                    diags.addParseError(framework.path, "failed to parse input file: {s}", .{@errorName(err)});
-            },
-            else => {
-                dso: {
-                    const dso_input = link.openDsoInput(io, diags, framework.path, framework.needed, framework.weak, false) catch break :dso;
-                    self.classifyInputFile(dso_input) catch break :dso;
-                    continue;
-                }
-                ar: {
-                    const archive_input = link.openArchiveInput(io, diags, framework.path, false, false) catch break :ar;
-                    self.classifyInputFile(archive_input) catch break :ar;
-                    continue;
-                }
-                diags.addParseError(framework.path, "unknown file extension", .{});
-            },
-        }
     }
 
     try self.parseInputFiles();
@@ -716,20 +681,9 @@ fn dumpArgv(self: *MachO, comp: *Compilation) !void {
             },
         };
 
-        for (self.framework_dirs) |f_dir| {
+        for (comp.framework_dirs) |f_dir| {
             try argv.append("-F");
-            try argv.append(f_dir);
-        }
-
-        for (self.frameworks) |framework| {
-            const name = framework.path.stem();
-            const arg = if (framework.needed)
-                try std.fmt.allocPrint(arena, "-needed_framework {s}", .{name})
-            else if (framework.weak)
-                try std.fmt.allocPrint(arena, "-weak_framework {s}", .{name})
-            else
-                try std.fmt.allocPrint(arena, "-framework {s}", .{name});
-            try argv.append(arg);
+            try argv.append(f_dir.path orelse ".");
         }
 
         if (comp.config.link_libcpp) {
@@ -763,7 +717,7 @@ pub fn classifyInputFile(self: *MachO, input: link.Input) !void {
     log.debug("classifying input file {f}", .{path});
 
     const fh = try self.addFileHandle(file);
-    var buffer: [Archive.SARMAG]u8 = undefined;
+    var buffer: [macho.ARMAG.len]u8 = undefined;
 
     const fat_arch: ?fat.Arch = try self.parseFatFile(file, path);
     const offset = if (fat_arch) |fa| fa.offset else 0;
@@ -778,7 +732,7 @@ pub fn classifyInputFile(self: *MachO, input: link.Input) !void {
         return;
     }
     if (readArMagic(io, file, offset, &buffer) catch null) |ar_magic| blk: {
-        if (!mem.eql(u8, ar_magic, Archive.ARMAG)) break :blk;
+        if (!mem.eql(u8, ar_magic, macho.ARMAG)) break :blk;
         try self.addArchive(input.archive, fh, fat_arch);
         return;
     }
@@ -808,10 +762,10 @@ pub fn readMachHeader(io: Io, file: Io.File, offset: usize) !macho.mach_header_6
     return hdr;
 }
 
-pub fn readArMagic(io: Io, file: Io.File, offset: usize, buffer: *[Archive.SARMAG]u8) ![]const u8 {
+pub fn readArMagic(io: Io, file: Io.File, offset: usize, buffer: *[macho.ARMAG.len]u8) ![]const u8 {
     const nread = try file.readPositionalAll(io, buffer, offset);
     if (nread != buffer.len) return error.InputOutput;
-    return buffer[0..Archive.SARMAG];
+    return buffer[0..macho.ARMAG.len];
 }
 
 fn addObject(self: *MachO, path: Path, handle_index: File.HandleIndex, offset: u64) !void {
@@ -1034,10 +988,6 @@ fn parseDependentDylibs(self: *MachO) !void {
     const comp = self.base.comp;
     const gpa = comp.gpa;
     const io = comp.io;
-    const framework_dirs = self.framework_dirs;
-
-    // TODO delete this, directories must instead be resolved by the frontend
-    const lib_directories = self.lib_directories;
 
     var arena_alloc = std.heap.ArenaAllocator.init(gpa);
     defer arena_alloc.deinit();
@@ -1072,14 +1022,14 @@ fn parseDependentDylibs(self: *MachO) !void {
                     const stem = fs.path.stem(id.name);
 
                     // Framework
-                    for (framework_dirs) |dir| {
+                    for (comp.framework_dirs) |dir| {
                         test_path.clearRetainingCapacity();
-                        if (try accessFrameworkPath(arena, io, &test_path, &checked_paths, dir, stem)) break :full_path test_path.items;
+                        if (try accessFrameworkPath(arena, io, &test_path, &checked_paths, dir.path orelse ".", stem)) break :full_path test_path.items;
                     }
 
                     // Library
                     const lib_name = eatPrefix(stem, "lib") orelse stem;
-                    for (lib_directories) |lib_directory| {
+                    for (self.lib_directories) |lib_directory| {
                         test_path.clearRetainingCapacity();
                         if (try accessLibPath(arena, io, &test_path, &checked_paths, lib_directory.path orelse ".", lib_name)) break :full_path test_path.items;
                     }

@@ -481,7 +481,6 @@ pub const File = struct {
 
         // TODO: remove this. libraries are resolved by the frontend.
         lib_directories: []const Directory,
-        framework_dirs: []const []const u8,
         rpath_list: []const []const u8,
 
         /// Zig compiler development linker flags.
@@ -501,7 +500,6 @@ pub const File = struct {
         headerpad_max_install_names: bool,
         /// Remove dylibs that are unreachable by the entry point or exported symbols
         dead_strip_dylibs: bool,
-        frameworks: []const MachO.Framework,
         /// Force load all members of static archives that implement an
         /// Objective-C class or category
         force_load_objc: bool,
@@ -1958,6 +1956,7 @@ pub const UnresolvedInput = union(enum) {
     /// Strings that come from GNU ld scripts. Is it a filename? Is it a path?
     /// Who knows! Fuck around and find out.
     ambiguous_name: AmbiguousNameQuery,
+    framework_query: FrameworkQuery,
 
     pub const NameQuery = struct {
         name: []const u8,
@@ -1994,6 +1993,12 @@ pub const UnresolvedInput = union(enum) {
                 .static => .dynamic,
             };
         }
+    };
+
+    pub const FrameworkQuery = struct {
+        name: []const u8,
+        needed: bool,
+        weak: bool,
     };
 
     pub const SearchStrategy = enum {
@@ -2118,6 +2123,7 @@ pub fn resolveInputs(
     /// Allocated with `gpa`.
     resolved_inputs: *std.ArrayList(Input),
     lib_directories: []const Cache.Directory,
+    framework_directories: []const Cache.Directory,
     color: std.zig.Color,
 ) Allocator.Error!void {
     var checked_paths: std.ArrayList(u8) = .empty;
@@ -2129,11 +2135,18 @@ pub fn resolveInputs(
     var archive_dedup: ArchiveDedupMap = .empty;
     defer archive_dedup.deinit(gpa);
 
+    // Allocated with `arena`.
     var failed_libs: std.ArrayList(struct {
         name: []const u8,
         strategy: UnresolvedInput.SearchStrategy,
         checked_paths: []const u8,
         preferred_mode: std.lang.LinkMode,
+    }) = .empty;
+
+    // Allocated with `arena`.
+    var failed_frameworks: std.ArrayList(struct {
+        name: []const u8,
+        checked_paths: []const u8,
     }) = .empty;
 
     // Convert external system libs into a stack so that items can be
@@ -2337,15 +2350,45 @@ pub fn resolveInputs(
                 }
                 continue;
             },
+            .framework_query => |framework_query| {
+                checked_paths.clearRetainingCapacity();
+                for (framework_directories) |framework_directory| {
+                    switch (try resolveFrameworkInput(
+                        gpa,
+                        arena,
+                        io,
+                        resolved_inputs,
+                        &checked_paths,
+                        &ld_script_bytes,
+                        &archive_dedup,
+                        framework_directory,
+                        framework_query,
+                    )) {
+                        .ok => continue :syslib,
+                        .no_match => {},
+                    }
+                }
+                try failed_frameworks.append(arena, .{
+                    .name = framework_query.name,
+                    .checked_paths = try arena.dupe(u8, checked_paths.items),
+                });
+                continue :syslib;
+            },
         }
         comptime unreachable;
     }
 
-    if (failed_libs.items.len > 0) {
+    if (failed_libs.items.len > 0 or failed_frameworks.items.len > 0) {
         for (failed_libs.items) |f| {
             const searched_paths = if (f.checked_paths.len == 0) " none" else f.checked_paths;
             std.log.err("unable to find {t} system library {q} using strategy {t}. searched paths:{s}", .{
                 f.preferred_mode, f.name, f.strategy, searched_paths,
+            });
+        }
+        for (failed_frameworks.items) |f| {
+            const searched_paths = if (f.checked_paths.len == 0) " none" else f.checked_paths;
+            std.log.err("unable to find system framework {q}. searched paths:{s}", .{
+                f.name, searched_paths,
             });
         }
         std.process.exit(1);
@@ -2437,16 +2480,15 @@ fn resolveLibInput(
             else => |e| fatal("unable to search for so library {qf}: {t}", .{ test_path, e }),
         };
         errdefer file.close(io);
-        return finishResolveLibInput(
-            io,
-            resolved_inputs,
-            archive_dedup,
-            test_path,
-            file,
-            link_mode,
-            name_query.query,
-            .basename,
-        );
+        resolved_inputs.appendAssumeCapacity(.{ .dso = .{
+            .path = test_path,
+            .file = file,
+            .needed = name_query.query.needed,
+            .weak = name_query.query.weak,
+            .reexport = name_query.query.reexport,
+            .fallback_soname = .basename,
+        } });
+        return .ok;
     }
 
     // In the case of MinGW, the main check will be .lib but we also need to
@@ -2462,16 +2504,13 @@ fn resolveLibInput(
             else => |e| fatal("unable to search for static library {qf}: {t}", .{ test_path, e }),
         };
         errdefer file.close(io);
-        return finishResolveLibInput(
-            io,
-            resolved_inputs,
-            archive_dedup,
-            test_path,
-            file,
-            link_mode,
-            name_query.query,
-            .basename,
-        );
+        addResolvedStaticLibInput(io, resolved_inputs, archive_dedup, .{
+            .path = test_path,
+            .file = file,
+            .must_link = name_query.query.must_link,
+            .hidden = name_query.query.hidden,
+        });
+        return .ok;
     }
 
     // In the case of OpenBSD, dynamic libraries are always versioned, without
@@ -2533,6 +2572,145 @@ fn resolveLibInput(
     return .no_match;
 }
 
+fn resolveFrameworkInput(
+    gpa: Allocator,
+    arena: Allocator,
+    io: Io,
+    /// Allocated via `gpa`.
+    resolved_inputs: *std.ArrayList(Input),
+    /// Allocated via `gpa`.
+    checked_paths: *std.ArrayList(u8),
+    /// Allocated via `gpa`.
+    ld_script_bytes: *std.ArrayList(u8),
+    /// Allocated via `gpa`.
+    archive_dedup: *ArchiveDedupMap,
+    framework_directory: Directory,
+    framework_query: UnresolvedInput.FrameworkQuery,
+) Allocator.Error!ResolveLibInputResult {
+    const sep = std.fs.path.sep_str;
+
+    tbd: {
+        const test_path: Path = .{
+            .root_dir = framework_directory,
+            .sub_path = try std.fmt.allocPrint(
+                arena,
+                "{s}.framework" ++ sep ++ "{s}.tbd",
+                .{ framework_query.name, framework_query.name },
+            ),
+        };
+        try checked_paths.print(gpa, "\n  {f}", .{test_path});
+        var file = test_path.root_dir.handle.openFile(io, test_path.sub_path, .{}) catch |err| switch (err) {
+            error.FileNotFound => break :tbd,
+            else => |e| fatal("unable to search for tbd library {qf}: {t}", .{ test_path, e }),
+        };
+        errdefer file.close(io);
+        resolved_inputs.appendAssumeCapacity(.{ .tbd = .{
+            .path = test_path,
+            .file = file,
+            .needed = framework_query.needed,
+            .weak = framework_query.weak,
+            .reexport = false,
+        } });
+        return .ok;
+    }
+
+    dylib: {
+        const test_path: Path = .{
+            .root_dir = framework_directory,
+            .sub_path = try std.fmt.allocPrint(
+                arena,
+                "{s}.framework" ++ sep ++ "{s}.dylib",
+                .{ framework_query.name, framework_query.name },
+            ),
+        };
+        try checked_paths.print(gpa, "\n  {f}", .{test_path});
+        var file = test_path.root_dir.handle.openFile(io, test_path.sub_path, .{}) catch |err| switch (err) {
+            error.FileNotFound => break :dylib,
+            else => |e| fatal("unable to search for dynamic library {qf}: {t}", .{ test_path, e }),
+        };
+        errdefer file.close(io);
+        resolved_inputs.appendAssumeCapacity(.{ .dso = .{
+            .path = test_path,
+            .file = file,
+            .needed = framework_query.needed,
+            .weak = framework_query.weak,
+            .reexport = false,
+            .fallback_soname = .basename,
+        } });
+        return .ok;
+    }
+
+    ambiguous: {
+        const test_path: Path = .{
+            .root_dir = framework_directory,
+            .sub_path = try std.fmt.allocPrint(
+                arena,
+                "{s}.framework" ++ sep ++ "{s}",
+                .{ framework_query.name, framework_query.name },
+            ),
+        };
+        try checked_paths.print(gpa, "\n  {f}", .{test_path});
+        var file = test_path.root_dir.handle.openFile(io, test_path.sub_path, .{}) catch |err| switch (err) {
+            error.FileNotFound => break :ambiguous,
+            else => |e| fatal("unable to search for framework library {qf}: {t}", .{ test_path, e }),
+        };
+        errdefer file.close(io);
+
+        const macho_magics: []const [4]u8 = &.{
+            @bitCast(std.macho.MH_MAGIC),
+            @bitCast(std.macho.MH_CIGAM),
+            @bitCast(std.macho.MH_MAGIC_64),
+            @bitCast(std.macho.MH_CIGAM_64),
+            @bitCast(std.macho.FAT_MAGIC),
+            @bitCast(std.macho.FAT_CIGAM),
+            @bitCast(std.macho.FAT_MAGIC_64),
+            @bitCast(std.macho.FAT_CIGAM_64),
+        };
+        try ld_script_bytes.resize(gpa, @max(4, std.macho.ARMAG.len));
+        const n = file.readPositionalAll(io, ld_script_bytes.items, 0) catch |err|
+            fatal("failed to read {qf}: {t}", .{ test_path, err });
+        const buf = ld_script_bytes.items[0..n];
+
+        for (macho_magics) |*macho_magic| {
+            if (mem.startsWith(u8, buf, macho_magic)) {
+                // Appears to be a Mach-O file, so a dylib.
+                resolved_inputs.appendAssumeCapacity(.{ .dso = .{
+                    .path = test_path,
+                    .file = file,
+                    .needed = framework_query.needed,
+                    .weak = framework_query.weak,
+                    .reexport = false,
+                    .fallback_soname = .basename,
+                } });
+                return .ok;
+            }
+        }
+
+        if (mem.startsWith(u8, buf, std.macho.ARMAG)) {
+            // Appears to be an archive file.
+            addResolvedStaticLibInput(io, resolved_inputs, archive_dedup, .{
+                .path = test_path,
+                .file = file,
+                .must_link = false,
+                .hidden = false,
+            });
+            return .ok;
+        }
+
+        // It doesn't look like a dylib or archive, so assume it's a tbd.
+        resolved_inputs.appendAssumeCapacity(.{ .tbd = .{
+            .path = test_path,
+            .file = file,
+            .needed = framework_query.needed,
+            .weak = framework_query.weak,
+            .reexport = false,
+        } });
+        return .ok;
+    }
+
+    return .no_match;
+}
+
 /// Deduplicates static archive link inputs based on their path. This is done for efficiency, so
 /// that linker implementations do not need to open and scan the archive just to determine that they
 /// need not extract any objects. At the time of writing, it also helps avoid "multiple definitions
@@ -2556,45 +2734,21 @@ const ArchiveDedupAdapter = struct {
     }
 };
 
-fn finishResolveLibInput(
+fn addResolvedStaticLibInput(
     io: Io,
     resolved_inputs: *std.ArrayList(Input),
     archive_dedup: *ArchiveDedupMap,
-    path: Path,
-    file: Io.File,
-    link_mode: std.lang.LinkMode,
-    query: UnresolvedInput.Query,
-    fallback_soname: Input.Dso.FallbackSoname,
-) ResolveLibInputResult {
-    switch (link_mode) {
-        .static => {
-            const ctx: ArchiveDedupAdapter = .{ .resolved_inputs = resolved_inputs.items };
-            const gop = archive_dedup.getOrPutAssumeCapacityAdapted(path, ctx);
-            if (gop.found_existing) {
-                // Ignore duplicate archive input
-                file.close(io);
-                return .ok;
-            }
-            gop.key_ptr.* = @intCast(resolved_inputs.items.len);
-            resolved_inputs.appendAssumeCapacity(.{ .archive = .{
-                .path = path,
-                .file = file,
-                .must_link = query.must_link,
-                .hidden = query.hidden,
-            } });
-        },
-        .dynamic => resolved_inputs.appendAssumeCapacity(.{
-            .dso = .{
-                .path = path,
-                .file = file,
-                .needed = query.needed,
-                .weak = query.weak,
-                .reexport = query.reexport,
-                .fallback_soname = fallback_soname,
-            },
-        }),
+    archive: Input.Object,
+) void {
+    const ctx: ArchiveDedupAdapter = .{ .resolved_inputs = resolved_inputs.items };
+    const gop = archive_dedup.getOrPutAssumeCapacityAdapted(archive.path, ctx);
+    if (gop.found_existing) {
+        // Ignore duplicate archive input
+        archive.file.close(io);
+    } else {
+        gop.key_ptr.* = @intCast(resolved_inputs.items.len);
+        resolved_inputs.appendAssumeCapacity(.{ .archive = archive });
     }
-    return .ok;
 }
 
 fn resolvePathInput(
@@ -2690,19 +2844,24 @@ fn resolvePathInputLib(
     try archive_dedup.ensureUnusedCapacity(gpa, 1);
 
     const test_path: Path = pq.path;
+
+    var file = test_path.root_dir.handle.openFile(io, test_path.sub_path, .{}) catch |err| switch (err) {
+        error.FileNotFound => return .no_match,
+        else => |e| fatal("unable to search for {t} library {qf}: {t}", .{
+            link_mode, std.fmt.alt(test_path, .formatEscapeChar), e,
+        }),
+    };
+    errdefer file.close(io);
+
     // In the case of shared libraries, they might actually be "linker scripts"
     // that contain references to other libraries.
-    if (pq.query.allow_so_scripts and target.ofmt == .elf and switch (Compilation.classifyFileExt(test_path.sub_path)) {
-        .static_library, .shared_library => true,
-        else => false,
-    }) {
-        var file = test_path.root_dir.handle.openFile(io, test_path.sub_path, .{}) catch |err| switch (err) {
-            error.FileNotFound => return .no_match,
-            else => |e| fatal("unable to search for {t} library {qf}: {t}", .{
-                link_mode, std.fmt.alt(test_path, .formatEscapeChar), e,
-            }),
-        };
-        errdefer file.close(io);
+    ld_script: {
+        if (!pq.query.allow_so_scripts) break :ld_script;
+        if (target.ofmt != .elf) break :ld_script;
+        switch (Compilation.classifyFileExt(test_path.sub_path)) {
+            .static_library, .shared_library => {},
+            else => break :ld_script,
+        }
         try ld_script_bytes.resize(gpa, @max(std.elf.MAGIC.len, std.elf.ARMAG.len));
         const n = file.readPositionalAll(io, ld_script_bytes.items, 0) catch |err|
             fatal("failed to read {qf}: {t}", .{ test_path, err });
@@ -2712,16 +2871,7 @@ fn resolvePathInputLib(
             mem.startsWith(u8, buf, std.elf.ARMAG_THIN))
         {
             // Appears to be an ELF or archive file.
-            return finishResolveLibInput(
-                io,
-                resolved_inputs,
-                archive_dedup,
-                test_path,
-                file,
-                link_mode,
-                pq.query,
-                fallback_soname,
-            );
+            break :ld_script;
         }
         const stat = file.stat(io) catch |err|
             fatal("failed to stat {f}: {t}", .{ test_path, err });
@@ -2785,21 +2935,23 @@ fn resolvePathInputLib(
         return .ok;
     }
 
-    var file = test_path.root_dir.handle.openFile(io, test_path.sub_path, .{}) catch |err| switch (err) {
-        error.FileNotFound => return .no_match,
-        else => |e| fatal("unable to search for {t} library {f}: {t}", .{ link_mode, test_path, e }),
-    };
-    errdefer file.close(io);
-    return finishResolveLibInput(
-        io,
-        resolved_inputs,
-        archive_dedup,
-        test_path,
-        file,
-        link_mode,
-        pq.query,
-        fallback_soname,
-    );
+    switch (link_mode) {
+        .dynamic => resolved_inputs.appendAssumeCapacity(.{ .dso = .{
+            .path = test_path,
+            .file = file,
+            .needed = pq.query.needed,
+            .weak = pq.query.weak,
+            .reexport = pq.query.reexport,
+            .fallback_soname = fallback_soname,
+        } }),
+        .static => addResolvedStaticLibInput(io, resolved_inputs, archive_dedup, .{
+            .path = test_path,
+            .file = file,
+            .must_link = pq.query.must_link,
+            .hidden = pq.query.hidden,
+        }),
+    }
+    return .ok;
 }
 
 pub fn openObject(io: Io, path: Path, must_link: bool, hidden: bool) !Input.Object {

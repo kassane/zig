@@ -151,7 +151,7 @@ pub fn flushStaticLib(macho_file: *MachO, comp: *Compilation) link.Error!void {
 
     // Update file offsets of contributing objects
     const total_size: usize = blk: {
-        var pos: usize = Archive.SARMAG;
+        var pos: usize = macho.ARMAG.len;
         pos += @sizeOf(Archive.ar_hdr);
         pos += Archive.SYMDEF.len + 1;
         pos = mem.alignForward(usize, pos, 8);
@@ -194,7 +194,7 @@ pub fn flushStaticLib(macho_file: *MachO, comp: *Compilation) link.Error!void {
     var writer: Writer = .fixed(buffer);
 
     // Write magic
-    writer.writeAll(Archive.ARMAG) catch unreachable;
+    writer.writeAll(macho.ARMAG) catch unreachable;
 
     // Write symtab
     ar_symtab.write(format, macho_file, &writer) catch |err|
