@@ -598,10 +598,10 @@ fn testOne(runner: *Runner, test_index: u32) TestError!void {
         defer if (contents_file) |file| file.close(runner.io);
         var contents_buffer: [512]u8 = undefined;
         var contents_impl: union(enum) {
-            ending,
+            ending: std.Io.Reader,
             dr: DelimitedReader,
             fr: std.Io.File.Reader,
-        } = .ending;
+        } = undefined;
         const contents_r: *std.Io.Reader = contents_r: switch (cmd) {
             .skip, .delete => {
                 const unexpected = line_it.rest();
@@ -610,11 +610,15 @@ fn testOne(runner: *Runner, test_index: u32) TestError!void {
                     "unexpected argument {q}",
                     .{unexpected},
                 );
-                break :contents_r .ending;
+                contents_impl = .{ .ending = .ending_instance };
+                break :contents_r &contents_impl.ending;
             },
             else => {
                 const contents_path = line_it.rest();
-                if (contents_path.len == 0) break :contents_r .ending;
+                if (contents_path.len == 0) {
+                    contents_impl = .{ .ending = .ending_instance };
+                    break :contents_r &contents_impl.ending;
+                }
 
                 if (std.mem.eql(u8, contents_path, "{")) {
                     contents_impl = .{
@@ -743,8 +747,27 @@ fn handleCommand(
                 else => |e| return update.manifest_sr.fail(arg.?, "unable to create file: {t}", .{e}),
             };
             defer file.close(runner.io);
-            var fw = file.writer(runner.io, &.{});
-            _ = try contents_r.streamRemaining(&fw.interface);
+            var fw_buffer: [512]u8 = undefined;
+            var fw = file.writer(runner.io, &fw_buffer);
+            _ = contents_r.streamRemaining(&fw.interface) catch |err| switch (err) {
+                error.ReadFailed => |e| return e,
+                error.WriteFailed => switch (fw.err.?) {
+                    error.Canceled => |e| return e,
+                    else => |e| return update.manifest_sr.fail(
+                        arg.?,
+                        "unable to write file: {t}",
+                        .{e},
+                    ),
+                },
+            };
+            fw.flush() catch |err| switch (err) {
+                error.Canceled => |e| return e,
+                else => |e| return update.manifest_sr.fail(
+                    arg.?,
+                    "unable to write file: {t}",
+                    .{e},
+                ),
+            };
             file.setTimestamps(runner.io, .{ .modify_timestamp = .{
                 .new = update.mtime,
             } }) catch |err| switch (err) {
