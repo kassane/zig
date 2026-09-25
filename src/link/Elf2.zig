@@ -4245,8 +4245,6 @@ fn externSymbolInner(elf: *Elf, opts: ExternSymbolOpts) Error!Symbol.Id {
         .bind = switch (opts.linkage) {
             .strong => .strong,
             .weak => .weak,
-            .internal => return elf.base.comp.link_diags.fail("TODO(Elf2): '.internal' linkage", .{}),
-            .link_once => return elf.base.comp.link_diags.fail("TODO(Elf2): '.link_once' linkage", .{}),
         },
         .visibility = switch (opts.visibility) {
             .default => .DEFAULT,
@@ -12205,8 +12203,6 @@ fn updateExportInner(
         .bind = switch (@"export".opts.linkage) {
             .strong => .strong,
             .weak => .weak,
-            .internal => return elf.base.comp.link_diags.fail("TODO(Elf2): '.internal' linkage", .{}),
-            .link_once => return elf.base.comp.link_diags.fail("TODO(Elf2): '.link_once' linkage", .{}),
         },
         .visibility = switch (@"export".opts.visibility) {
             .default => .DEFAULT,
