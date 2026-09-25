@@ -3631,7 +3631,7 @@ pub fn resolveLazyPath(
     const c = &maker.scanned_config.configuration;
     return switch (lazy_path) {
         .source_path => |sp| try packagePath(maker, arena, sp.owner, sp.sub_path.slice(c)),
-        .relative => |relative| relativePath(maker, arena, relative),
+        .relative => |relative| try relativePath(maker, arena, relative, stepByIndex(maker, asking_step_index)),
         .generated => |gen| {
             const base = generatedPath(maker, gen.index);
             var file_path = base;
@@ -3768,7 +3768,12 @@ pub fn packagePath(
     };
 }
 
-pub fn relativePath(maker: *const Maker, arena: Allocator, relative: Configuration.LazyPath.Relative) Allocator.Error!Path {
+pub fn relativePath(
+    maker: *const Maker,
+    arena: Allocator,
+    relative: Configuration.LazyPath.Relative,
+    asking_step: *Step,
+) error{ OutOfMemory, MakeFailed }!Path {
     const graph = maker.graph;
     const c = &maker.scanned_config.configuration;
     const sub_path = relative.sub_path.slice(c);
@@ -3789,12 +3794,12 @@ pub fn relativePath(maker: *const Maker, arena: Allocator, relative: Configurati
             .root_dir = graph.build_root_directory,
             .sub_path = sub_path,
         },
-        .zig_exe => .{
-            .root_dir = .cwd(),
-            .sub_path = if (sub_path.len == 0)
-                graph.zig_exe
-            else
-                try Io.Dir.path.join(arena, &.{ graph.zig_exe, sub_path }),
+        .zig_exe => {
+            assert(sub_path.len == 0);
+            return .{
+                .root_dir = .cwd(),
+                .sub_path = graph.zig_exe,
+            };
         },
         .zig_lib => .{
             .root_dir = graph.zig_lib_directory,
@@ -3804,6 +3809,10 @@ pub fn relativePath(maker: *const Maker, arena: Allocator, relative: Configurati
         .install_lib => try maker.install_paths.lib.join(arena, sub_path),
         .install_bin => try maker.install_paths.bin.join(arena, sub_path),
         .install_include => try maker.install_paths.include.join(arena, sub_path),
+        .libc_runtimes => if (maker.graph.libc_runtimes_dir) |libc_runtimes_dir| .{
+            .root_dir = .cwd(),
+            .sub_path = try Dir.path.join(arena, &.{ libc_runtimes_dir, sub_path }),
+        } else asking_step.fail(maker, "unknown LazyPath: \"--libc-runtimes\" not specified", .{}),
     };
 }
 
@@ -4391,15 +4400,22 @@ fn confPathDepToCachePath(
                 else => |index| try Dir.path.join(arena, &.{ index.get(c).?.root_path.slice(c), sub_path }),
             },
         },
+        .zig_exe => {
+            assert(sub_path.len == 0);
+            return .{
+                .root_dir = .cwd(),
+                .sub_path = graph.zig_exe,
+            };
+        },
         .zig_lib => .{
             .root_dir = graph.zig_lib_directory,
             .sub_path = sub_path,
         },
-        .zig_exe => @panic("TODO"),
         .install_prefix => @panic("TODO"),
         .install_lib => @panic("TODO"),
         .install_bin => @panic("TODO"),
         .install_include => @panic("TODO"),
+        .libc_runtimes => @panic("TODO"),
     };
 }
 

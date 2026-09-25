@@ -218,8 +218,8 @@ pub const VTable = struct {
     childKill: *const fn (?*anyopaque, *std.process.Child) void,
 
     progressParentFile: *const fn (?*anyopaque) std.Progress.ParentFileError!File,
-    inheritParentDir: *const fn (?*anyopaque, handle: Dir.Handle) (Cancelable || UnexpectedError)!Dir,
-    inheritParentFile: *const fn (?*anyopaque, handle: File.Handle, flags: File.Flags) (Cancelable || UnexpectedError)!File,
+    inheritParentDir: *const fn (?*anyopaque, handle: Dir.Handle) InheritParentHandleError!Dir,
+    inheritParentFile: *const fn (?*anyopaque, handle: File.Handle, flags: File.Flags) InheritParentHandleError!File,
 
     now: *const fn (?*anyopaque, Clock) Timestamp,
     clockResolution: *const fn (?*anyopaque, Clock) Clock.ResolutionError!Duration,
@@ -826,6 +826,10 @@ pub const UnexpectedError = error{
     /// the respective function.
     Unexpected,
 };
+
+pub const InheritParentHandleError = error{
+    UnsupportedOperation,
+} || Cancelable || UnexpectedError;
 
 pub const Clock = enum {
     /// A settable system-wide clock that measures real (i.e. wall-clock)
@@ -2802,8 +2806,8 @@ pub const failing: std.Io = .{
         .childKill = unreachableChildKill,
 
         .progressParentFile = failingProgressParentFile,
-        .inheritParentDir = unreachableInheritParentDir,
-        .inheritParentFile = unreachableInheritParentFile,
+        .inheritParentDir = failingInheritParentDir,
+        .inheritParentFile = failingInheritParentFile,
 
         .random = noRandom,
         .randomSecure = failingRandomSecure,
@@ -3474,17 +3478,17 @@ pub fn failingProgressParentFile(userdata: ?*anyopaque) std.Progress.ParentFileE
     return error.UnsupportedOperation;
 }
 
-pub fn unreachableInheritParentDir(userdata: ?*anyopaque, handle: Dir.Handle) (Cancelable || UnexpectedError)!Dir {
+pub fn failingInheritParentDir(userdata: ?*anyopaque, handle: Dir.Handle) InheritParentHandleError!Dir {
     _ = userdata;
     _ = handle;
-    unreachable;
+    return error.UnsupportedOperation;
 }
 
-pub fn unreachableInheritParentFile(userdata: ?*anyopaque, handle: File.Handle, flags: File.Flags) (Cancelable || UnexpectedError)!File {
+pub fn failingInheritParentFile(userdata: ?*anyopaque, handle: File.Handle, flags: File.Flags) InheritParentHandleError!File {
     _ = userdata;
     _ = handle;
     _ = flags;
-    unreachable;
+    return error.UnsupportedOperation;
 }
 
 pub fn noRandom(userdata: ?*anyopaque, buffer: []u8) void {

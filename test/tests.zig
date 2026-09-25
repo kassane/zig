@@ -3411,6 +3411,7 @@ pub fn addIncrementalTests(
             run.addArgs(&.{ "--target", target_str });
         }
 
+        run.addPrefixedDirectoryArg("--libc-runtimes=", .{ .relative = .{ .base = .libc_runtimes } });
         run.addThirdPartyEnabledArgDarling(.{ .enabled = "-fdarling" });
         run.addThirdPartyEnabledArgQemu(.{ .enabled = "-fqemu" });
         run.addThirdPartyEnabledArgRosetta(.{ .enabled = "-frosetta" });

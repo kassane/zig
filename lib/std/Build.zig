@@ -2693,12 +2693,15 @@ fn validateConfigureDependency(lazy_path: LazyPath) void {
         .src_path, .cwd_relative, .dependency => {}, // OK
         .generated => @panic("configure phase cannot depend on files generated during make phase"),
         .relative => |relative| switch (relative.base) {
-            .cwd, .build_root, .local_cache, .global_cache, .zig_exe, .zig_lib => {}, // OK
+            .cwd, .build_root, .local_cache, .global_cache, .zig_lib => {}, // OK
+            .zig_exe => if (relative.sub_path.len > 0) @panic("file base cannot have a sub path"),
             .install_prefix,
             .install_lib,
             .install_bin,
             .install_include,
             => @panic("configure phase cannot depend on files installed during make phase"),
+            .libc_runtimes,
+            => @panic("configure phase cannot depend on directory known only during make phase"),
         },
     }
 }

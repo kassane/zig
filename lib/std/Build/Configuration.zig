@@ -1575,6 +1575,7 @@ pub const LazyPath = union(@This().Tag) {
             install_lib,
             install_bin,
             install_include,
+            libc_runtimes,
         };
     };
 };

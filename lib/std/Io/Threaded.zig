@@ -1975,6 +1975,10 @@ const have_copy_file_range = switch (native_os) {
     .linux, .freebsd => true,
     else => false,
 };
+const have_fcntl = switch (native_os) {
+    .linux, .dragonfly, .freebsd, .netbsd, .openbsd, .illumos, .driverkit, .ios, .maccatalyst, .macos, .tvos, .visionos, .watchos => true,
+    else => false,
+};
 const have_fcopyfile = is_darwin;
 const have_fchmodat2 = native_os == .linux and
     (builtin.os.isAtLeast(.linux, .{ .major = 6, .minor = 6, .patch = 0 }) orelse true) and
@@ -17195,7 +17199,7 @@ pub fn posixExecveat(
             break :err posix.errno(posix.system.execve(p, argv, env_block.slice.ptr));
         };
         if (comptime native_os == .linux and (!builtin.link_libc or
-            (builtin.target.abi.isGnu() and builtin.target.os.version_range.linux.glibc.order(
+            (builtin.target.isGnuLibC() and builtin.target.os.version_range.linux.glibc.order(
                 .{ .major = 2, .minor = 34, .patch = 0 },
             ).compare(.gte))))
         {

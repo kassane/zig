@@ -857,7 +857,7 @@ pub fn setWatchInputsFromManifestFiles(
 }
 
 /// For steps that have a single input that never changes when re-running `make`.
-pub fn singleUnchangingWatchInput(step: *Step, maker: *Maker, arena: Allocator, lazy_path: LazyPath) Allocator.Error!void {
+pub fn singleUnchangingWatchInput(step: *Step, maker: *Maker, arena: Allocator, lazy_path: LazyPath) FailError!void {
     if (!step.inputs.populated()) try step.addWatchInput(maker, arena, lazy_path);
 }
 
@@ -866,7 +866,7 @@ pub fn clearWatchInputs(step: *Step, maker: *Maker) void {
 }
 
 /// Places a *file* dependency on the path.
-pub fn addWatchInput(step: *Step, maker: *Maker, arena: Allocator, lazy_file: LazyPath) Allocator.Error!void {
+pub fn addWatchInput(step: *Step, maker: *Maker, arena: Allocator, lazy_file: LazyPath) FailError!void {
     const conf = &maker.scanned_config.configuration;
     switch (lazy_file) {
         .source_path => |source_path| {
@@ -875,7 +875,7 @@ pub fn addWatchInput(step: *Step, maker: *Maker, arena: Allocator, lazy_file: La
             try addWatchInputPath(step, maker, pkg_path);
         },
         .relative => |relative| {
-            const resolved_path = try maker.relativePath(arena, relative);
+            const resolved_path = try maker.relativePath(arena, relative, step);
             try addWatchInputPath(step, maker, resolved_path);
         },
         // Nothing to watch because this dependency edge is modeled instead via `dependants`.
@@ -890,7 +890,7 @@ pub fn addWatchInput(step: *Step, maker: *Maker, arena: Allocator, lazy_file: La
 /// Paths derived from this directory should also be manually added via
 /// `addDirectoryWatchInputFromPath` if and only if this function returns
 /// `true`.
-pub fn addDirectoryWatchInput(step: *Step, maker: *Maker, lazy_directory: LazyPath) Allocator.Error!bool {
+pub fn addDirectoryWatchInput(step: *Step, maker: *Maker, lazy_directory: LazyPath) FailError!bool {
     const graph = maker.graph;
     const arena = graph.arena; // TODO don't leak into the process arena
     switch (lazy_directory) {
@@ -901,7 +901,7 @@ pub fn addDirectoryWatchInput(step: *Step, maker: *Maker, lazy_directory: LazyPa
             try addDirectoryWatchInputFromPath(step, maker, pkg_path);
         },
         .relative => |relative| {
-            const resolved_path = try maker.relativePath(arena, relative);
+            const resolved_path = try maker.relativePath(arena, relative, step);
             try addDirectoryWatchInputFromPath(step, maker, resolved_path);
         },
         // Nothing to watch because this dependency edge is modeled instead via `dependants`.

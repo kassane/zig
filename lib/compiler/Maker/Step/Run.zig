@@ -250,9 +250,18 @@ pub fn make(
                         protocol_args.appendAssumeCapacity(0);
                     },
                     .path_file => {
+                        const lazy_path = arg.path.value.?.get(conf);
+                        switch (lazy_path) {
+                            else => {},
+                            .relative => |relative| switch (relative.flags.base) {
+                                else => {},
+                                .libc_runtimes => if (graph.libc_runtimes_dir == null) continue,
+                            },
+                        }
+
                         const prefix = if (arg.prefix.value) |p| p.slice(conf) else "";
                         const suffix = if (arg.suffix.value) |p| p.slice(conf) else "";
-                        const file_path = try maker.resolveLazyPathIndex(arena, arg.path.value.?, run_index);
+                        const file_path = try maker.resolveLazyPath(arena, lazy_path, run_index);
 
                         try owned_files.resize(gpa, owned_files.bit_length + 1, true);
                         try inherit_files.ensureUnusedCapacity(gpa, 1);
@@ -283,9 +292,18 @@ pub fn make(
                         }
                     },
                     .path_directory => {
+                        const lazy_path = arg.path.value.?.get(conf);
+                        switch (lazy_path) {
+                            else => {},
+                            .relative => |relative| switch (relative.flags.base) {
+                                else => {},
+                                .libc_runtimes => if (graph.libc_runtimes_dir == null) continue,
+                            },
+                        }
+
                         const prefix = if (arg.prefix.value) |p| p.slice(conf) else "";
                         const suffix = if (arg.suffix.value) |p| p.slice(conf) else "";
-                        const dir_path = try maker.resolveLazyPathIndex(arena, arg.path.value.?, run_index);
+                        const dir_path = try maker.resolveLazyPath(arena, lazy_path, run_index);
                         try input_dirs.append(gpa, dir_path);
 
                         const has_sub_path = dir_path.sub_path.len > 0;
@@ -2242,12 +2260,8 @@ fn runCommand(
                     else => builtin.target,
                 };
 
-                const need_cross_libc = config.flags.link_libc and root_target.os.tag == .linux and
-                    switch (producer.flags2.linkage) {
-                        .static => false,
-                        .dynamic => true,
-                        .default => root_target.isGnuLibC(),
-                    };
+                const need_cross_libc = root_target.os.tag == .linux and
+                    config.flags.link_libc and config.flags.link_mode == .dynamic;
                 switch (std.zig.system.getExternalExecutor(io, &root_target, .{
                     .host_cpu_arch = host.cpu.arch,
                     .host_os_tag = host.os.tag,
@@ -2316,7 +2330,7 @@ fn runCommand(
                             interp_argv.appendAssumeCapacity(bin_name);
                             interp_argv.appendAssumeCapacity("--dir=.");
                             for (conf_run.preopens.slice) |preopen| {
-                                const path = try maker.resolveLazyPath(arena, preopen.path.get(conf), run_index);
+                                const path = try maker.resolveLazyPathIndex(arena, preopen.path, run_index);
                                 path.root_dir.handle.createDirPath(io, path.subPathOrDot()) catch |e|
                                     return step.fail(maker, "failed creating directory {f}: {t}", .{ path, e });
                                 interp_argv.appendAssumeCapacity(try arena.print("--dir={f}::{s}", .{ path, preopen.name.slice(conf) }));

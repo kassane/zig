@@ -22,10 +22,12 @@ const Args = struct {
     src_dir: ?std.Io.Dir,
     targets: std.ArrayList(u32),
     target_bytes: std.ArrayList(u8),
-    enable_qemu: bool,
-    enable_wine: bool,
-    enable_wasmtime: bool,
+    libc_runtimes_dir: ?std.Io.Dir,
     enable_darling: bool,
+    enable_qemu: bool,
+    enable_rosetta: bool,
+    enable_wasmtime: bool,
+    enable_wine: bool,
     quiet: bool,
 
     fn deinit(args: *Args, gpa: std.mem.Allocator) void {
@@ -73,7 +75,28 @@ pub fn runServer(runner: *Runner) ProtocolError {
             .args => {
                 const args_body = try arena.alloc(u8, hdr.bytes_len);
                 runner.server.in.readSliceAll(args_body) catch unreachable;
-                var state: enum { positional, zig, lib, src, target } = .positional;
+                const State = enum {
+                    positional,
+                    @"--zig",
+                    @"--lib",
+                    @"--src",
+                    @"--target",
+                    @"--libc-runtimes",
+                };
+                var state: State = .positional;
+                const state_expected: std.enums.EnumArray(State, enum {
+                    path,
+                    dir,
+                    file,
+                    string,
+                }) = .init(.{
+                    .positional = .path,
+                    .@"--zig" = .file,
+                    .@"--lib" = .dir,
+                    .@"--src" = .dir,
+                    .@"--target" = .string,
+                    .@"--libc-runtimes" = .dir,
+                });
                 var input_dir: std.zig.Server.Message.InputDir = .cwd;
                 var args_body_offset: usize = 0;
                 while (args_body.len - args_body_offset > 0) {
@@ -87,42 +110,56 @@ pub fn runServer(runner: *Runner) ProtocolError {
                             args_body_offset = end + 1;
                             switch (state) {
                                 .positional => if (std.mem.eql(u8, string, "--target")) {
-                                    state = .target;
+                                    state = .@"--target";
                                     continue;
                                 } else if (std.mem.cutPrefix(u8, string, "--target=")) |target| {
                                     try runner.args.addTarget(runner.gpa, target);
-                                } else if (std.mem.eql(u8, string, "-fqemu")) {
-                                    runner.args.enable_qemu = true;
-                                } else if (std.mem.eql(u8, string, "-fwine")) {
-                                    runner.args.enable_wine = true;
-                                } else if (std.mem.eql(u8, string, "-fwasmtime")) {
-                                    runner.args.enable_wasmtime = true;
+                                } else if (std.mem.eql(u8, string, "--libc-runtimes")) {
+                                    state = .@"--libc-runtimes";
+                                    continue;
                                 } else if (std.mem.eql(u8, string, "-fdarling")) {
                                     runner.args.enable_darling = true;
+                                } else if (std.mem.eql(u8, string, "-fqemu")) {
+                                    runner.args.enable_qemu = true;
+                                } else if (std.mem.eql(u8, string, "-frosetta")) {
+                                    runner.args.enable_rosetta = true;
+                                } else if (std.mem.eql(u8, string, "-fwasmtime")) {
+                                    runner.args.enable_wasmtime = true;
+                                } else if (std.mem.eql(u8, string, "-fwine")) {
+                                    runner.args.enable_wine = true;
                                 } else if (std.mem.eql(u8, string, "--quiet")) {
                                     runner.args.quiet = true;
                                 },
-                                .zig => unreachable,
-                                .lib => unreachable,
-                                .src => unreachable,
-                                .target => try runner.args.addTarget(runner.gpa, string),
+                                .@"--target" => try runner.args.addTarget(runner.gpa, string),
+                                else => return runner.fail(
+                                    "\"{t}\" expected {t}, got {t}",
+                                    .{ state, state_expected.get(state), arg },
+                                ),
                             }
                         },
                         .prefix => {
                             const end = std.mem.findScalarPos(u8, args_body, args_body_offset, 0).?;
                             const string = args_body[args_body_offset..end];
                             args_body_offset = end + 1;
+                            assert(state == .positional);
                             state = if (std.mem.eql(u8, string, "--zig="))
-                                .zig
+                                .@"--zig"
                             else if (std.mem.eql(u8, string, "--lib="))
-                                .lib
+                                .@"--lib"
                             else if (std.mem.eql(u8, string, "--src="))
-                                .src
+                                .@"--src"
+                            else if (std.mem.eql(u8, string, "--libc-runtimes="))
+                                .@"--libc-runtimes"
                             else
-                                unreachable;
+                                return runner.fail("unsupported arg prefix: {q}", .{string});
                             continue;
                         },
-                        .suffix => unreachable,
+                        .suffix => {
+                            const end = std.mem.findScalarPos(u8, args_body, args_body_offset, 0).?;
+                            const string = args_body[args_body_offset..end];
+                            args_body_offset = end + 1;
+                            return runner.fail("unsupported arg suffix: {q}", .{string});
+                        },
                         .input_dir => {
                             input_dir = @fromBackingInt(@backingInt(input_dir) + 1);
                             continue :arg .output_dir;
@@ -137,16 +174,19 @@ pub fn runServer(runner: *Runner) ProtocolError {
                                 dir_handle.*,
                             ) catch |err| switch (err) {
                                 error.Canceled => |e| return e,
-                                error.Unexpected => |e| return runner.fail(
+                                else => |e| return runner.fail(
                                     "unable to inherit parent dir: {t}",
                                     .{e},
                                 ),
                             };
                             switch (state) {
                                 .positional => {
-                                    assert(runner.args.@"test" == null);
+                                    if (runner.args.@"test" != null or
+                                        runner.args.manifest_file != null) return runner.fail(
+                                        "{t} specified multiple times",
+                                        .{state},
+                                    );
                                     runner.args.@"test" = .{ .input_dir = input_dir, .dir = dir };
-                                    assert(runner.args.manifest_file == null);
                                     const manifest_path = "manifest";
                                     runner.args.manifest_file = dir.openFile(
                                         runner.io,
@@ -161,16 +201,31 @@ pub fn runServer(runner: *Runner) ProtocolError {
                                     };
                                     try runner.discoverInput(input_dir, manifest_path);
                                 },
-                                .zig => unreachable,
-                                .lib => {
-                                    assert(runner.args.lib_dir == null);
+                                .@"--lib" => {
+                                    if (runner.args.lib_dir != null) return runner.fail(
+                                        "\"{t}\" specified multiple times",
+                                        .{state},
+                                    );
                                     runner.args.lib_dir = dir;
                                 },
-                                .src => {
-                                    assert(runner.args.src_dir == null);
+                                .@"--src" => {
+                                    if (runner.args.src_dir != null) return runner.fail(
+                                        "\"{t}\" specified multiple times",
+                                        .{state},
+                                    );
                                     runner.args.src_dir = dir;
                                 },
-                                .target => unreachable,
+                                .@"--libc-runtimes" => {
+                                    if (runner.args.libc_runtimes_dir != null) return runner.fail(
+                                        "\"{t}\" specified multiple times",
+                                        .{state},
+                                    );
+                                    runner.args.libc_runtimes_dir = dir;
+                                },
+                                else => return runner.fail(
+                                    "\"{t}\" expected {t}, got {t}",
+                                    .{ state, state_expected.get(state), arg },
+                                ),
                             }
                         },
                         .input_file, .input_file_content, .output_file => {
@@ -184,23 +239,31 @@ pub fn runServer(runner: *Runner) ProtocolError {
                                 .{ .nonblocking = false },
                             ) catch |err| switch (err) {
                                 error.Canceled => |e| return e,
-                                error.Unexpected => |e| return runner.fail(
+                                else => |e| return runner.fail(
                                     "unable to inherit parent file: {t}",
                                     .{e},
                                 ),
                             };
                             switch (state) {
                                 .positional => {
-                                    assert(runner.args.manifest_file == null);
+                                    if (runner.args.@"test" != null or
+                                        runner.args.manifest_file != null) return runner.fail(
+                                        "{t} specified multiple times",
+                                        .{state},
+                                    );
                                     runner.args.manifest_file = file;
                                 },
-                                .zig => {
-                                    assert(runner.args.zig_exe == null);
+                                .@"--zig" => {
+                                    if (runner.args.zig_exe != null) return runner.fail(
+                                        "\"{t}\" specified multiple times",
+                                        .{state},
+                                    );
                                     runner.args.zig_exe = file;
                                 },
-                                .lib => unreachable,
-                                .src => unreachable,
-                                .target => unreachable,
+                                else => return runner.fail(
+                                    "\"{t}\" expected {t}, got {t}",
+                                    .{ state, state_expected.get(state), arg },
+                                ),
                             }
                         },
                     }
@@ -480,7 +543,6 @@ fn testOne(runner: *Runner, test_index: u32) TestError!void {
         .target_query = target_query,
         .manifest_sr = .init(&manifest_fr.interface, runner.gpa, &runner.eb_wip, src_path_string: {
             var path_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
-
             const src_path = src_path: {
                 break :src_path path_buffer[0 .. manifest_file.realPath(
                     runner.io,
@@ -1022,6 +1084,7 @@ const Compiler = struct {
         const gpa = runner.gpa;
         const arena = runner.arena.allocator();
         const io = runner.io;
+        const target = &comp.target.resolved;
         const config = &comp.config.?;
         const out_dir = ".zig-cache" ++ std.Io.Dir.path.sep_str ++
             "o" ++ std.Io.Dir.path.sep_str ++ std.Build.Cache.binToHex(digest.*);
@@ -1036,16 +1099,18 @@ const Compiler = struct {
             .stdout, .exit, .lldb => {},
         }
 
-        const executor = executor: switch (std.zig.system.getExternalExecutor(
-            io,
-            &comp.target.resolved,
-            .{
-                .host_cpu_arch = runner.host.cpu.arch,
-                .host_os_tag = runner.host.os.tag,
-                .link_mode = config.flags.link_mode,
-                .link_libc = config.flags.link_libc,
-            },
-        )) {
+        var argv: std.ArrayList([]const u8) = .initBuffer(try arena.alloc([]const u8, 4));
+        var environ_map: std.process.Environ.Map = .init(gpa);
+        defer environ_map.deinit();
+        const need_cross_libc =
+            target.os.tag == .linux and config.flags.link_libc and config.flags.link_mode == .dynamic;
+        const use_executor = use_executor: switch (std.zig.system.getExternalExecutor(io, target, .{
+            .host_cpu_arch = runner.host.cpu.arch,
+            .host_os_tag = runner.host.os.tag,
+            .qemu_fixes_dl = need_cross_libc and runner.args.libc_runtimes_dir != null,
+            .link_mode = config.flags.link_mode,
+            .link_libc = config.flags.link_libc,
+        })) {
             .bad_dl, .bad_os_or_cpu => {
                 // This binary cannot be executed on this host.
                 if (!runner.args.quiet) std.log.warn("skipping execution because host {q} cannot " ++
@@ -1054,24 +1119,57 @@ const Compiler = struct {
                 });
                 return;
             },
-            .native, .rosetta => null,
-            .qemu => |executor| if (runner.args.enable_qemu)
-                executor
+            .native => false,
+            .darling => |executor| if (runner.args.enable_darling) {
+                argv.appendAssumeCapacity(executor);
+                break :use_executor true;
+            } else continue :use_executor .bad_os_or_cpu,
+            .qemu => |executor| if (runner.args.enable_qemu) {
+                argv.appendAssumeCapacity(executor);
+                if (need_cross_libc) {
+                    const libc_runtimes_dir = runner.args.libc_runtimes_dir orelse
+                        continue :use_executor .bad_os_or_cpu;
+                    var path_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+                    const libc_runtimes_path = path_buffer[0 .. libc_runtimes_dir.realPath(
+                        runner.io,
+                        &path_buffer,
+                    ) catch |err| switch (err) {
+                        error.Canceled => |e| return e,
+                        else => |e| return runner.fail("unable to get libc runtimes path: {t}", .{e}),
+                    }];
+                    argv.appendSliceAssumeCapacity(&.{ "-L", try std.Io.Dir.path.join(arena, &.{
+                        libc_runtimes_path,
+                        try if (target.isGnuLibC()) std.zig.target.glibcRuntimeTriple(
+                            arena,
+                            target.cpu.arch,
+                            target.os.tag,
+                            target.abi,
+                        ) else if (target.isMuslLibC()) std.zig.target.muslRuntimeTriple(
+                            arena,
+                            target.cpu.arch,
+                            target.abi,
+                        ) else unreachable,
+                    }) });
+                }
+                break :use_executor true;
+            } else continue :use_executor .bad_os_or_cpu,
+            .rosetta => if (runner.args.enable_rosetta)
+                true
             else
-                continue :executor .bad_os_or_cpu,
-            .wine => |executor| if (runner.args.enable_wine)
-                executor
-            else
-                continue :executor .bad_os_or_cpu,
-            .wasmtime => |executor| if (runner.args.enable_wasmtime)
-                executor
-            else
-                continue :executor .bad_os_or_cpu,
-            .darling => |executor| if (runner.args.enable_darling)
-                executor
-            else
-                continue :executor .bad_os_or_cpu,
+                continue :use_executor .bad_os_or_cpu,
+            .wine => |executor| if (runner.args.enable_wine) {
+                if (!environ_map.contains("WINEDEBUG")) try environ_map.put("WINEDEBUG", "-all");
+                argv.appendAssumeCapacity(executor);
+                break :use_executor true;
+            } else continue :use_executor .bad_os_or_cpu,
+            .wasmtime => |executor| if (runner.args.enable_wasmtime) {
+                if (!environ_map.contains("WASMTIME_BACKTRACE_DETAILS"))
+                    try environ_map.put("WASMTIME_BACKTRACE_DETAILS", "1");
+                argv.appendSliceAssumeCapacity(&.{ executor, "--dir=.", "-Sinherit-env" });
+                break :use_executor true;
+            } else continue :use_executor .bad_os_or_cpu,
         };
+        argv.appendAssumeCapacity(bin_path);
 
         var name_buffer: [std.Progress.Node.max_name_len]u8 = undefined;
         const run_prog_node = runner.prog_node.start(std.mem.print(&name_buffer, "run {s}", .{
@@ -1088,11 +1186,12 @@ const Compiler = struct {
             .errors => unreachable,
             .stdout, .exit => {
                 const result = std.process.run(gpa, io, .{
-                    .exe = if (executor) |_| .search else .{ .file = bin_file },
-                    .argv = if (executor) |e| &.{ e, bin_path } else &.{bin_path},
+                    .exe = if (use_executor) .search else .{ .file = bin_file },
+                    .argv = argv.items,
                     .cwd = .{ .dir = src_dir },
+                    .environ_map = &environ_map,
                     .progress_node = run_prog_node,
-                }) catch |err| if (executor) |_| {
+                }) catch |err| if (use_executor) {
                     // Chances are the foreign executor isn't available. Skip this evaluation.
                     if (!runner.args.quiet) std.log.warn(
                         "skipping execution of {q} via executor for foreign target {q}: {t}",
@@ -1151,7 +1250,7 @@ const Compiler = struct {
                         .{bin_path},
                     ),
                 }
-                if (executor == null and result.stderr.len > 0) {
+                if (!use_executor and result.stderr.len > 0) {
                     std.log.err("generated executable {q} had unexpected stderr:\n{s}", .{
                         bin_path, result.stderr,
                     });
@@ -1257,10 +1356,12 @@ const ClientArgs = struct {
     src_dir: std.Io.Dir,
     targets: std.ArrayList([]const u8),
     keep_src: bool,
+    libc_runtimes_dir: ?std.Io.Dir,
+    enable_darling: bool,
     enable_qemu: bool,
+    enable_rosetta: bool,
     enable_wine: bool,
     enable_wasmtime: bool,
-    enable_darling: bool,
     quiet: bool,
 };
 pub fn main(init: std.process.Init) (std.mem.Allocator.Error || std.Io.Cancelable)!u8 {
@@ -1275,6 +1376,7 @@ pub fn main(init: std.process.Init) (std.mem.Allocator.Error || std.Io.Cancelabl
     var test_path_arg: ?[]const u8 = null;
     var zig_path_arg: ?[]const u8 = null;
     var lib_path_arg: ?[]const u8 = null;
+    var libc_runtimes_path_arg: ?[]const u8 = null;
     var args: ClientArgs = .{
         .test_file = undefined,
         .test_kind = undefined,
@@ -1283,10 +1385,12 @@ pub fn main(init: std.process.Init) (std.mem.Allocator.Error || std.Io.Cancelabl
         .src_dir = undefined,
         .targets = .empty,
         .keep_src = false,
+        .libc_runtimes_dir = null,
+        .enable_darling = false,
         .enable_qemu = false,
+        .enable_rosetta = false,
         .enable_wine = false,
         .enable_wasmtime = false,
-        .enable_darling = false,
         .quiet = false,
     };
     defer args.targets.deinit(init.gpa);
@@ -1312,10 +1416,12 @@ pub fn main(init: std.process.Init) (std.mem.Allocator.Error || std.Io.Cancelabl
                     .src_dir = null,
                     .targets = .empty,
                     .target_bytes = .empty,
-                    .enable_qemu = false,
-                    .enable_wine = false,
-                    .enable_wasmtime = false,
+                    .libc_runtimes_dir = null,
                     .enable_darling = false,
+                    .enable_qemu = false,
+                    .enable_rosetta = false,
+                    .enable_wasmtime = false,
+                    .enable_wine = false,
                     .quiet = false,
                 },
                 .host = std.zig.system.resolveTargetQuery(init.io, .{}) catch |err| switch (err) {
@@ -1361,18 +1467,24 @@ pub fn main(init: std.process.Init) (std.mem.Allocator.Error || std.Io.Cancelabl
             try args.targets.append(init.gpa, try arena.dupe(u8, target));
         } else if (std.mem.eql(u8, arg, "--keep-src")) {
             args.keep_src = true;
+        } else if (std.mem.eql(u8, arg, "--libc-runtimes")) {
+            libc_runtimes_path_arg = arg_it.next() orelse fatal("missing arg after {q}", .{arg});
+        } else if (std.mem.cutPrefix(u8, arg, "--libc-runtimes=")) |libc_runtimes_path| {
+            libc_runtimes_path_arg = libc_runtimes_path;
+        } else if (std.mem.eql(u8, arg, "-fdarling")) {
+            args.enable_darling = true;
         } else if (std.mem.eql(u8, arg, "-fqemu")) {
             args.enable_qemu = true;
+        } else if (std.mem.eql(u8, arg, "-frosetta")) {
+            args.enable_rosetta = true;
         } else if (std.mem.eql(u8, arg, "-fwine")) {
             args.enable_wine = true;
         } else if (std.mem.eql(u8, arg, "-fwasmtime")) {
             args.enable_wasmtime = true;
-        } else if (std.mem.eql(u8, arg, "-fdarling")) {
-            args.enable_darling = true;
         } else if (std.mem.eql(u8, arg, "--quiet")) {
             args.quiet = true;
         } else {
-            if (test_path_arg) |_| fatal("unknown arg {q}", .{arg});
+            if (test_path_arg) |_| fatal("unexpected arg {q}", .{arg});
             test_path_arg = arg;
         }
     }
@@ -1403,6 +1515,15 @@ pub fn main(init: std.process.Init) (std.mem.Allocator.Error || std.Io.Cancelabl
         else => |e| fatal("unable to open {q}: {t}", .{ lib_path, e }),
     };
     defer args.lib_dir.close(init.io);
+    if (libc_runtimes_path_arg) |libc_runtimes_path| args.libc_runtimes_dir = cwd.openDir(
+        init.io,
+        libc_runtimes_path,
+        .{},
+    ) catch |err| switch (err) {
+        error.Canceled => |e| return e,
+        else => |e| fatal("unable to open {q}: {t}", .{ lib_path, e }),
+    };
+    defer if (args.libc_runtimes_dir) |libc_runtimes_dir| libc_runtimes_dir.close(init.io);
 
     const src_dir_path = "src_" ++ std.fmt.hex(rand_int: {
         var rand_int: u64 = undefined;
@@ -1479,21 +1600,18 @@ fn runClient(
     try argv.append(gpa, @backingInt(Arg.prefix));
     try argv.appendSlice(gpa, "--zig=");
     try argv.append(gpa, 0);
-
     try argv.append(gpa, @backingInt(Arg.input_file));
     try argv.appendSlice(gpa, @ptrCast(&args.zig_exe.handle));
 
     try argv.append(gpa, @backingInt(Arg.prefix));
     try argv.appendSlice(gpa, "--lib=");
     try argv.append(gpa, 0);
-
     try argv.append(gpa, @backingInt(Arg.input_dir));
     try argv.appendSlice(gpa, @ptrCast(&args.lib_dir.handle));
 
     try argv.append(gpa, @backingInt(Arg.prefix));
     try argv.appendSlice(gpa, "--src=");
     try argv.append(gpa, 0);
-
     try argv.append(gpa, @backingInt(Arg.output_dir));
     try argv.appendSlice(gpa, @ptrCast(&args.src_dir.handle));
 
@@ -1507,9 +1625,26 @@ fn runClient(
         try argv.append(gpa, 0);
     }
 
+    if (args.libc_runtimes_dir) |libc_runtimes_dir| {
+        try argv.append(gpa, @backingInt(Arg.prefix));
+        try argv.appendSlice(gpa, "--libc-runtimes=");
+        try argv.append(gpa, 0);
+        try argv.append(gpa, @backingInt(Arg.input_dir));
+        try argv.appendSlice(gpa, @ptrCast(&libc_runtimes_dir.handle));
+    }
+    if (args.enable_darling) {
+        try argv.append(gpa, @backingInt(Arg.string));
+        try argv.appendSlice(gpa, "-fdarling");
+        try argv.append(gpa, 0);
+    }
     if (args.enable_qemu) {
         try argv.append(gpa, @backingInt(Arg.string));
         try argv.appendSlice(gpa, "-fqemu");
+        try argv.append(gpa, 0);
+    }
+    if (args.enable_rosetta) {
+        try argv.append(gpa, @backingInt(Arg.string));
+        try argv.appendSlice(gpa, "-frosetta");
         try argv.append(gpa, 0);
     }
     if (args.enable_wine) {
@@ -1520,11 +1655,6 @@ fn runClient(
     if (args.enable_wasmtime) {
         try argv.append(gpa, @backingInt(Arg.string));
         try argv.appendSlice(gpa, "-fwasmtime");
-        try argv.append(gpa, 0);
-    }
-    if (args.enable_darling) {
-        try argv.append(gpa, @backingInt(Arg.string));
-        try argv.appendSlice(gpa, "-fdarling");
         try argv.append(gpa, 0);
     }
 
