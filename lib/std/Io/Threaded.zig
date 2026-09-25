@@ -85,6 +85,8 @@ csprng: Csprng = .uninitialized,
 
 system_basic_information: SystemBasicInformation = .{},
 
+process_spawn_mutex: if (is_windows) Io.Mutex else void = if (is_windows) .init else {},
+
 const SystemBasicInformation = if (!is_windows) struct {} else struct {
     buffer: windows.SYSTEM.BASIC_INFORMATION = undefined,
     initialized: std.atomic.Value(bool) = .{ .raw = false },
@@ -1706,7 +1708,7 @@ var global_single_threaded_instance: Threaded = .init_single_threaded;
 pub const global_single_threaded: *Threaded = &global_single_threaded_instance;
 
 pub fn setAsyncLimit(t: *Threaded, new_limit: Io.Limit) void {
-    mutexLock(&t.mutex);
+    mutexLockUncancelable(&t.mutex);
     defer mutexUnlock(&t.mutex);
     t.async_limit = new_limit;
 }
@@ -1727,7 +1729,7 @@ pub fn deinit(t: *Threaded) void {
 fn join(t: *Threaded) void {
     if (builtin.single_threaded) return;
     {
-        mutexLock(&t.mutex);
+        mutexLockUncancelable(&t.mutex);
         defer mutexUnlock(&t.mutex);
         t.join_requested = true;
     }
@@ -1789,7 +1791,7 @@ fn worker(t: *Threaded) void {
 
     defer t.wait_group.finish();
 
-    mutexLock(&t.mutex);
+    mutexLockUncancelable(&t.mutex);
     defer mutexUnlock(&t.mutex);
 
     while (true) {
@@ -1798,7 +1800,7 @@ fn worker(t: *Threaded) void {
             thread.cancel_protection = .unblocked;
             const runnable: *Runnable = @fieldParentPtr("node", runnable_node);
             runnable.startFn(runnable, &thread, t);
-            mutexLock(&t.mutex);
+            mutexLockUncancelable(&t.mutex);
             t.busy_count -= 1;
         }
         if (t.join_requested) break;
@@ -2088,7 +2090,7 @@ fn async(
         },
     };
 
-    mutexLock(&t.mutex);
+    mutexLockUncancelable(&t.mutex);
 
     const busy_count = t.busy_count;
 
@@ -2140,7 +2142,7 @@ fn concurrent(
     };
     errdefer future.destroy(gpa);
 
-    mutexLock(&t.mutex);
+    mutexLockUncancelable(&t.mutex);
     defer mutexUnlock(&t.mutex);
 
     const busy_count = t.busy_count;
@@ -2185,7 +2187,7 @@ fn groupAsync(
         error.OutOfMemory => return groupAsyncEager(start, context.ptr),
     };
 
-    mutexLock(&t.mutex);
+    mutexLockUncancelable(&t.mutex);
 
     const busy_count = t.busy_count;
 
@@ -2248,7 +2250,7 @@ fn groupConcurrent(
     };
     errdefer task.destroy(gpa);
 
-    mutexLock(&t.mutex);
+    mutexLockUncancelable(&t.mutex);
     defer mutexUnlock(&t.mutex);
 
     const busy_count = t.busy_count;
@@ -4118,7 +4120,7 @@ fn fileStatWindows(userdata: ?*anyopaque, file: File) File.StatError!File.Stat {
 
 fn systemBasicInformation(t: *Threaded) ?*const windows.SYSTEM.BASIC_INFORMATION {
     if (!t.system_basic_information.initialized.load(.acquire)) {
-        mutexLock(&t.mutex);
+        mutexLockUncancelable(&t.mutex);
         defer mutexUnlock(&t.mutex);
 
         switch (windows.ntdll.NtQuerySystemInformation(
@@ -10011,7 +10013,7 @@ fn ntReadFileResult(io_status_block: *const windows.IO_STATUS_BLOCK) !usize {
         .PENDING => unreachable,
         .CANCELLED => unreachable,
         .SUCCESS => return io_status_block.Information,
-        .END_OF_FILE, .PIPE_BROKEN => return error.EndOfStream,
+        .END_OF_FILE, .PIPE_BROKEN, .PIPE_CLOSING => return error.EndOfStream,
         .INVALID_HANDLE => return error.NotOpenForReading,
         .INVALID_DEVICE_REQUEST => return error.IsDir,
         .FILE_LOCK_CONFLICT => return error.LockViolation,
@@ -10028,7 +10030,7 @@ fn ntWriteFileResult(io_status_block: *const windows.IO_STATUS_BLOCK) !usize {
         .INVALID_USER_BUFFER => return error.SystemResources,
         .NO_MEMORY => return error.SystemResources,
         .QUOTA_EXCEEDED => return error.SystemResources,
-        .PIPE_BROKEN => return error.BrokenPipe,
+        .PIPE_BROKEN, .PIPE_CLOSING => return error.BrokenPipe,
         .INVALID_HANDLE => return error.NotOpenForWriting,
         .FILE_LOCK_CONFLICT => return error.LockViolation,
         .ACCESS_DENIED => return error.AccessDenied,
@@ -14091,7 +14093,7 @@ fn lockStderr(userdata: ?*anyopaque, terminal_mode: ?Io.Terminal.Mode) Io.Cancel
     const current_thread_id = Thread.currentId();
 
     if (@atomicLoad(std.Thread.Id, &t.stderr_mutex_locker, .unordered) != current_thread_id) {
-        mutexLock(&t.stderr_mutex);
+        try mutexLock(&t.stderr_mutex);
         assert(t.stderr_mutex_lock_count == 0);
         @atomicStore(std.Thread.Id, &t.stderr_mutex_locker, current_thread_id, .unordered);
     }
@@ -15117,7 +15119,7 @@ const WindowsEnvironStrings = struct {
 };
 
 fn scanEnviron(t: *Threaded) void {
-    mutexLock(&t.mutex);
+    mutexLockUncancelable(&t.mutex);
     defer mutexUnlock(&t.mutex);
     if (t.environ_initialized) return;
     t.environ.scan(t.allocator);
@@ -15416,7 +15418,7 @@ fn spawnPosix(t: *Threaded, options: process.SpawnOptions) process.SpawnError!Sp
 
 fn getDevNullFd(t: *Threaded) !posix.fd_t {
     {
-        mutexLock(&t.mutex);
+        try mutexLock(&t.mutex);
         defer mutexUnlock(&t.mutex);
         if (t.null_file.fd != -1) return t.null_file.fd;
     }
@@ -15428,7 +15430,7 @@ fn getDevNullFd(t: *Threaded) !posix.fd_t {
             .SUCCESS => {
                 syscall.finish();
                 const fresh_fd: posix.fd_t = @intCast(rc);
-                mutexLock(&t.mutex); // Another thread might have won the race.
+                mutexLockUncancelable(&t.mutex); // Another thread might have won the race.
                 defer mutexUnlock(&t.mutex);
                 if (t.null_file.fd != -1) {
                     closeFd(fresh_fd);
@@ -15856,6 +15858,84 @@ fn processSpawnDarwin(userdata: ?*anyopaque, options: process.SpawnOptions) proc
 fn processSpawnWindows(userdata: ?*anyopaque, options: process.SpawnOptions) process.SpawnError!process.Child {
     const t: *Threaded = @ptrCast(@alignCast(userdata));
 
+    var arena_allocator = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena_allocator.deinit();
+    const arena = arena_allocator.allocator();
+
+    const cwd_w = cwd_w: {
+        switch (options.cwd) {
+            .inherit => break :cwd_w null,
+            .dir => |cwd_dir| {
+                var dir_path_buffer = try arena.alloc(u16, windows.PATH_MAX_WIDE + 1);
+                const dir_path = try GetFinalPathNameByHandle(
+                    cwd_dir.handle,
+                    .{},
+                    dir_path_buffer[0..windows.PATH_MAX_WIDE],
+                );
+                dir_path_buffer[dir_path.len] = 0;
+                // Shrink the allocation down to just the path buffer + sentinel
+                dir_path_buffer = try arena.realloc(dir_path_buffer, dir_path.len + 1);
+                break :cwd_w dir_path_buffer[0..dir_path.len :0];
+            },
+            .path => |cwd| {
+                break :cwd_w try std.unicode.wtf8ToWtf16LeAllocZ(arena, cwd);
+            },
+        }
+    };
+    const cwd_w_ptr = if (cwd_w) |cwd| cwd.ptr else null;
+
+    // If the app name has more than just a filename, then we need to separate
+    // that into the basename and dirname and use the dirname as an addition to
+    // the cwd path. This is because NtQueryDirectoryFile cannot accept
+    // FileName params with path separators.
+    var app_w_buf: [windows.PATH_MAX_WIDE]u16 = undefined;
+    // If the app name is absolute, then the cwd will already have the app's dirname in it,
+    // so only populate app_dir if app name is a relative path with > 0 path separators.
+    const app_path_w, const app_dir_w, const app_name_w = app: {
+        const path = switch (options.exe) {
+            .detect, .search, .path => options.argv[0],
+            .file => |file| {
+                const path_w = try GetFinalPathNameByHandle(file.handle, .{}, &app_w_buf);
+                var path_it: Dir.path.ComponentIterator(.windows, u16) = .init(path_w);
+                const base = path_it.last().?;
+                break :app .{
+                    null,
+                    if (path_it.previous()) |dir| dir.path else path_it.root(),
+                    base.name,
+                };
+            },
+            .explicit => |explicit| explicit.path,
+        };
+        break :app .{
+            if (Dir.path.isAbsolute(path)) null else switch (options.exe) {
+                // The cwd provided by options is in effect when choosing the executable
+                // path to match POSIX semantics.
+                .detect, .search => cwd_w,
+                .path => |dir| try GetFinalPathNameByHandle(dir.handle, .{}, &app_w_buf),
+                .file => unreachable,
+                .explicit => |explicit| try GetFinalPathNameByHandle(
+                    explicit.dir.handle,
+                    .{},
+                    &app_w_buf,
+                ),
+            },
+            if (Dir.path.dirname(path)) |app_dir|
+                try std.unicode.wtf8ToWtf16LeAllocZ(arena, app_dir)
+            else
+                null,
+            try std.unicode.wtf8ToWtf16LeAllocZ(arena, Dir.path.basename(path)),
+        };
+    };
+
+    const flags: windows.CreateProcessFlags = .{
+        .create_suspended = options.start_suspended,
+        .create_unicode_environment = true,
+        .create_no_window = options.create_no_window,
+    };
+
+    try mutexLock(&t.process_spawn_mutex);
+    defer mutexUnlock(&t.process_spawn_mutex);
+
     const any_ignore =
         options.stdin == .ignore or
         options.stdout == .ignore or
@@ -15896,6 +15976,43 @@ fn processSpawnWindows(userdata: ?*anyopaque, options: process.SpawnOptions) pro
         .quota = std.Progress.max_packet_len * 2,
     }) else undefined;
     errdefer if (options.progress_node.index != .none) for (prog_pipe) |handle| windows.CloseHandle(handle);
+
+    defer for (options.inherit_dirs) |inherit_dir| switch (windows.ntdll.NtSetInformationObject(
+        inherit_dir.handle,
+        .HandleFlag,
+        &windows.OBJECT.HANDLE_FLAG{ .INHERIT = false },
+        @sizeOf(windows.OBJECT.HANDLE_FLAG),
+    )) {
+        .SUCCESS => {},
+        else => |status| windows.unexpectedStatus(status) catch {},
+    };
+    for (options.inherit_dirs) |inherit_dir| switch (windows.ntdll.NtSetInformationObject(
+        inherit_dir.handle,
+        .HandleFlag,
+        &windows.OBJECT.HANDLE_FLAG{ .INHERIT = true },
+        @sizeOf(windows.OBJECT.HANDLE_FLAG),
+    )) {
+        .SUCCESS => {},
+        else => |status| return windows.unexpectedStatus(status),
+    };
+    defer for (options.inherit_files) |inherit_file| switch (windows.ntdll.NtSetInformationObject(
+        inherit_file.handle,
+        .HandleFlag,
+        &windows.OBJECT.HANDLE_FLAG{ .INHERIT = false },
+        @sizeOf(windows.OBJECT.HANDLE_FLAG),
+    )) {
+        .SUCCESS => {},
+        else => |status| windows.unexpectedStatus(status) catch {},
+    };
+    for (options.inherit_files) |inherit_file| switch (windows.ntdll.NtSetInformationObject(
+        inherit_file.handle,
+        .HandleFlag,
+        &windows.OBJECT.HANDLE_FLAG{ .INHERIT = true },
+        @sizeOf(windows.OBJECT.HANDLE_FLAG),
+    )) {
+        .SUCCESS => {},
+        else => |status| return windows.unexpectedStatus(status),
+    };
 
     var siStartInfo: windows.STARTUPINFOW = .{
         .cb = @sizeOf(windows.STARTUPINFOW),
@@ -15974,32 +16091,6 @@ fn processSpawnWindows(userdata: ?*anyopaque, options: process.SpawnOptions) pro
     };
     var piProcInfo: windows.PROCESS.INFORMATION = undefined;
 
-    var arena_allocator = std.heap.ArenaAllocator.init(t.allocator);
-    defer arena_allocator.deinit();
-    const arena = arena_allocator.allocator();
-
-    const cwd_w = cwd_w: {
-        switch (options.cwd) {
-            .inherit => break :cwd_w null,
-            .dir => |cwd_dir| {
-                var dir_path_buffer = try arena.alloc(u16, windows.PATH_MAX_WIDE + 1);
-                const dir_path = try GetFinalPathNameByHandle(
-                    cwd_dir.handle,
-                    .{},
-                    dir_path_buffer[0..windows.PATH_MAX_WIDE],
-                );
-                dir_path_buffer[dir_path.len] = 0;
-                // Shrink the allocation down to just the path buffer + sentinel
-                dir_path_buffer = try arena.realloc(dir_path_buffer, dir_path.len + 1);
-                break :cwd_w dir_path_buffer[0..dir_path.len :0];
-            },
-            .path => |cwd| {
-                break :cwd_w try std.unicode.wtf8ToWtf16LeAllocZ(arena, cwd);
-            },
-        }
-    };
-    const cwd_w_ptr = if (cwd_w) |cwd| cwd.ptr else null;
-
     const env_block = env_block: {
         const prog_handle = if (options.progress_node.index != .none)
             prog_pipe[1]
@@ -16011,45 +16102,6 @@ fn processSpawnWindows(userdata: ?*anyopaque, options: process.SpawnOptions) pro
         break :env_block try t.environ.process_environ.createWindowsBlock(arena, .{
             .zig_progress_handle = if (options.progress_node.index != .none) prog_pipe[1] else windows.INVALID_HANDLE_VALUE,
         });
-    };
-
-    const app_name_wtf8 = options.argv[0];
-    const app_name_is_absolute = Dir.path.isAbsolute(app_name_wtf8);
-
-    // The cwd provided by options is in effect when choosing the executable
-    // path to match POSIX semantics.
-    const cwd_path_w = x: {
-        // If the app name is absolute, then we need to use its dirname as the cwd
-        if (app_name_is_absolute) {
-            const dir = Dir.path.dirname(app_name_wtf8).?;
-            break :x try std.unicode.wtf8ToWtf16LeAllocZ(arena, dir);
-        } else if (cwd_w) |cwd| {
-            break :x cwd;
-        } else {
-            break :x &[_:0]u16{}; // empty for cwd
-        }
-    };
-
-    // If the app name has more than just a filename, then we need to separate
-    // that into the basename and dirname and use the dirname as an addition to
-    // the cwd path. This is because NtQueryDirectoryFile cannot accept
-    // FileName params with path separators.
-    const app_basename_wtf8 = Dir.path.basename(app_name_wtf8);
-    // If the app name is absolute, then the cwd will already have the app's dirname in it,
-    // so only populate app_dirname if app name is a relative path with > 0 path separators.
-    const maybe_app_dirname_wtf8 = if (!app_name_is_absolute) Dir.path.dirname(app_name_wtf8) else null;
-    const app_dirname_w: ?[:0]u16 = x: {
-        if (maybe_app_dirname_wtf8) |app_dirname_wtf8| {
-            break :x try std.unicode.wtf8ToWtf16LeAllocZ(arena, app_dirname_wtf8);
-        }
-        break :x null;
-    };
-    const app_name_w = try std.unicode.wtf8ToWtf16LeAllocZ(arena, app_basename_wtf8);
-
-    const flags: windows.CreateProcessFlags = .{
-        .create_suspended = options.start_suspended,
-        .create_unicode_environment = true,
-        .create_no_window = options.create_no_window,
     };
 
     run: {
@@ -16072,10 +16124,8 @@ fn processSpawnWindows(userdata: ?*anyopaque, options: process.SpawnOptions) pro
 
         var dir_buf: std.ArrayList(u16) = .empty;
 
-        if (cwd_path_w.len > 0) {
-            try dir_buf.appendSlice(arena, cwd_path_w);
-        }
-        if (app_dirname_w) |app_dir| {
+        if (app_path_w) |app_path| try dir_buf.appendSlice(arena, app_path);
+        if (app_dir_w) |app_dir| {
             if (dir_buf.items.len > 0) try dir_buf.append(arena, Dir.path.sep);
             try dir_buf.appendSlice(arena, app_dir);
         }
@@ -16100,15 +16150,18 @@ fn processSpawnWindows(userdata: ?*anyopaque, options: process.SpawnOptions) pro
                 else => |e| return e,
             };
 
-            // If the app name had path separators, that disallows PATH searching,
-            // and there's no need to search the PATH if the app name is absolute.
             // We still search the path if the cwd is absolute because of the
             // "cwd provided by options is in effect when choosing the executable path
             // to match posix semantics" behavior--we don't want to skip searching
             // the PATH just because we were trying to set the cwd of the child process.
-            if (app_dirname_w != null or app_name_is_absolute) {
-                return original_err;
-            }
+            if (switch (options.exe) {
+                // If the app name had path separators, that disallows PATH searching.
+                .detect => app_dir_w != null,
+                // There's no need to search the PATH if the app name is absolute.
+                .search => app_path_w == null,
+                // PATH searching is disallowed.
+                .path, .file, .explicit => true,
+            }) return original_err;
 
             var it = std.mem.tokenizeScalar(u16, PATH, ';');
             while (it.next()) |search_path| {
@@ -16186,11 +16239,9 @@ fn processSpawnWindows(userdata: ?*anyopaque, options: process.SpawnOptions) pro
     };
 }
 
-fn inheritFile() windows.HANDLE {}
-
 fn getCngDevice(t: *Threaded) Io.RandomSecureError!windows.HANDLE {
     {
-        mutexLock(&t.mutex);
+        try mutexLock(&t.mutex);
         defer mutexUnlock(&t.mutex);
         if (t.random_file.handle) |handle| return handle;
     }
@@ -16213,7 +16264,7 @@ fn getCngDevice(t: *Threaded) Io.RandomSecureError!windows.HANDLE {
     )) {
         .SUCCESS => {
             syscall.finish();
-            mutexLock(&t.mutex); // Another thread might have won the race.
+            mutexLockUncancelable(&t.mutex); // Another thread might have won the race.
             defer mutexUnlock(&t.mutex);
             if (t.random_file.handle) |prev_handle| {
                 windows.CloseHandle(fresh_handle);
@@ -16234,7 +16285,7 @@ fn getCngDevice(t: *Threaded) Io.RandomSecureError!windows.HANDLE {
 
 fn getNulDevice(t: *Threaded) !windows.HANDLE {
     {
-        mutexLock(&t.mutex);
+        try mutexLock(&t.mutex);
         defer mutexUnlock(&t.mutex);
         if (t.null_file.handle) |handle| return handle;
     }
@@ -16260,7 +16311,7 @@ fn getNulDevice(t: *Threaded) !windows.HANDLE {
     )) {
         .SUCCESS => {
             syscall.finish();
-            mutexLock(&t.mutex); // Another thread might have won the race.
+            mutexLockUncancelable(&t.mutex); // Another thread might have won the race.
             defer mutexUnlock(&t.mutex);
             if (t.null_file.handle) |prev_handle| {
                 windows.CloseHandle(fresh_handle);
@@ -16293,7 +16344,7 @@ fn getNulDevice(t: *Threaded) !windows.HANDLE {
 
 fn getNamedPipeDevice(t: *Threaded) !windows.HANDLE {
     {
-        mutexLock(&t.mutex);
+        try mutexLock(&t.mutex);
         defer mutexUnlock(&t.mutex);
         if (t.pipe_file.handle) |handle| return handle;
     }
@@ -16315,7 +16366,7 @@ fn getNamedPipeDevice(t: *Threaded) !windows.HANDLE {
     )) {
         .SUCCESS => {
             syscall.finish();
-            mutexLock(&t.mutex); // Another thread might have won the race.
+            mutexLockUncancelable(&t.mutex); // Another thread might have won the race.
             defer mutexUnlock(&t.mutex);
             if (t.pipe_file.handle) |prev_handle| {
                 windows.CloseHandle(fresh_handle);
@@ -16600,7 +16651,15 @@ fn windowsCreateProcessPathExt(
         else
             full_app_name;
 
-        if (windowsCreateProcess(app_name_w.ptr, cmd_line_w.ptr, env_block, cwd_ptr, flags, lpStartupInfo, lpProcessInformation)) |_| {
+        if (windowsCreateProcess(
+            app_name_w.ptr,
+            cmd_line_w.ptr,
+            env_block,
+            cwd_ptr,
+            flags,
+            lpStartupInfo,
+            lpProcessInformation,
+        )) |_| {
             return;
         } else |err| switch (err) {
             error.FileNotFound => continue,
@@ -17716,6 +17775,15 @@ fn inheritParentHandle(handle: posix.fd_t) Io.InheritParentHandleError!void {
         .visionos,
         .watchos,
         => return setCloexec(handle),
+        .windows => switch (windows.ntdll.NtSetInformationObject(
+            handle,
+            .HandleFlag,
+            &windows.OBJECT.HANDLE_FLAG{ .INHERIT = false },
+            @sizeOf(windows.OBJECT.HANDLE_FLAG),
+        )) {
+            .SUCCESS => return,
+            else => |status| return windows.unexpectedStatus(status),
+        },
         else => return error.UnsupportedOperation,
     }
 }
@@ -17756,7 +17824,7 @@ fn random(userdata: ?*anyopaque, buffer: []u8) void {
 }
 
 fn randomMainThread(t: *Threaded, buffer: []u8) void {
-    mutexLock(&t.mutex);
+    mutexLockUncancelable(&t.mutex);
     defer mutexUnlock(&t.mutex);
 
     if (!t.csprng.isInitialized()) {
@@ -17764,7 +17832,7 @@ fn randomMainThread(t: *Threaded, buffer: []u8) void {
         var seed: [Csprng.seed_len]u8 = undefined;
         {
             mutexUnlock(&t.mutex);
-            defer mutexLock(&t.mutex);
+            defer mutexLockUncancelable(&t.mutex);
 
             const prev = swapCancelProtection(t, .blocked);
             defer _ = swapCancelProtection(t, prev);
@@ -17951,7 +18019,7 @@ fn randomSecure(userdata: ?*anyopaque, buffer: []u8) Io.RandomSecureError!void {
 
 fn getRandomFd(t: *Threaded) Io.RandomSecureError!posix.fd_t {
     {
-        mutexLock(&t.mutex);
+        try mutexLock(&t.mutex);
         defer mutexUnlock(&t.mutex);
 
         if (t.random_file.fd == -2) return error.EntropyUnavailable;
@@ -17992,7 +18060,7 @@ fn getRandomFd(t: *Threaded) Io.RandomSecureError!posix.fd_t {
                     .SUCCESS => {
                         syscall.finish();
                         if (!statx.mask.TYPE) return error.EntropyUnavailable;
-                        mutexLock(&t.mutex); // Another thread might have won the race.
+                        mutexLockUncancelable(&t.mutex); // Another thread might have won the race.
                         defer mutexUnlock(&t.mutex);
                         if (t.random_file.fd >= 0) {
                             closeFd(fd);
@@ -18020,7 +18088,7 @@ fn getRandomFd(t: *Threaded) Io.RandomSecureError!posix.fd_t {
                 switch (posix.errno(fstat_sym(fd, &stat))) {
                     .SUCCESS => {
                         syscall.finish();
-                        mutexLock(&t.mutex); // Another thread might have won the race.
+                        mutexLockUncancelable(&t.mutex); // Another thread might have won the race.
                         defer mutexUnlock(&t.mutex);
                         if (t.random_file.fd >= 0) {
                             closeFd(fd);
@@ -19576,7 +19644,7 @@ fn condWait(cond: *Io.Condition, mutex: *Io.Mutex) void {
     }
 
     mutexUnlock(mutex);
-    defer mutexLock(mutex);
+    defer mutexLockUncancelable(mutex);
 
     while (true) {
         Thread.futexWaitUncancelable(&cond.epoch.raw, epoch, null);
@@ -19596,8 +19664,27 @@ fn condWait(cond: *Io.Condition, mutex: *Io.Mutex) void {
     }
 }
 
+/// Same as `Io.Mutex.lock` but avoids the VTable.
+pub fn mutexLock(m: *Io.Mutex) Io.Cancelable!void {
+    const initial_state = m.state.cmpxchgStrong(
+        .unlocked,
+        .locked_once,
+        .acquire,
+        .monotonic,
+    ) orelse {
+        @branchHint(.likely);
+        return;
+    };
+    if (initial_state == .contended) {
+        try Thread.futexWait(@ptrCast(&m.state.raw), @backingInt(Io.Mutex.State.contended), null);
+    }
+    while (m.state.swap(.contended, .acquire) != .unlocked) {
+        try Thread.futexWait(@ptrCast(&m.state.raw), @backingInt(Io.Mutex.State.contended), null);
+    }
+}
+
 /// Same as `Io.Mutex.lockUncancelable` but avoids the VTable.
-pub fn mutexLock(m: *Io.Mutex) void {
+pub fn mutexLockUncancelable(m: *Io.Mutex) void {
     const initial_state = m.state.cmpxchgStrong(
         .unlocked,
         .locked_once,
