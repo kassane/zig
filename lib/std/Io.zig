@@ -218,6 +218,8 @@ pub const VTable = struct {
     childKill: *const fn (?*anyopaque, *std.process.Child) void,
 
     progressParentFile: *const fn (?*anyopaque) std.Progress.ParentFileError!File,
+    inheritParentDir: *const fn (?*anyopaque, handle: Dir.Handle) (Cancelable || UnexpectedError)!Dir,
+    inheritParentFile: *const fn (?*anyopaque, handle: File.Handle, flags: File.Flags) (Cancelable || UnexpectedError)!File,
 
     now: *const fn (?*anyopaque, Clock) Timestamp,
     clockResolution: *const fn (?*anyopaque, Clock) Clock.ResolutionError!Duration,
@@ -2800,6 +2802,8 @@ pub const failing: std.Io = .{
         .childKill = unreachableChildKill,
 
         .progressParentFile = failingProgressParentFile,
+        .inheritParentDir = unreachableInheritParentDir,
+        .inheritParentFile = unreachableInheritParentFile,
 
         .random = noRandom,
         .randomSecure = failingRandomSecure,
@@ -3468,6 +3472,19 @@ pub fn unreachableChildKill(userdata: ?*anyopaque, child: *std.process.Child) vo
 pub fn failingProgressParentFile(userdata: ?*anyopaque) std.Progress.ParentFileError!File {
     _ = userdata;
     return error.UnsupportedOperation;
+}
+
+pub fn unreachableInheritParentDir(userdata: ?*anyopaque, handle: Dir.Handle) (Cancelable || UnexpectedError)!Dir {
+    _ = userdata;
+    _ = handle;
+    unreachable;
+}
+
+pub fn unreachableInheritParentFile(userdata: ?*anyopaque, handle: File.Handle, flags: File.Flags) (Cancelable || UnexpectedError)!File {
+    _ = userdata;
+    _ = handle;
+    _ = flags;
+    unreachable;
 }
 
 pub fn noRandom(userdata: ?*anyopaque, buffer: []u8) void {

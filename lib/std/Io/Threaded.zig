@@ -1906,6 +1906,8 @@ pub fn io(t: *Threaded) Io {
             .childKill = childKill,
 
             .progressParentFile = progressParentFile,
+            .inheritParentDir = inheritParentDir,
+            .inheritParentFile = inheritParentFile,
 
             .now = now,
             .clockResolution = clockResolution,
@@ -17692,6 +17694,44 @@ fn progressParentFile(userdata: ?*anyopaque) std.Progress.ParentFileError!File {
     const t: *Threaded = @ptrCast(@alignCast(userdata));
     t.scanEnviron();
     return t.environ.zig_progress_file;
+}
+
+fn inheritParentHandle(handle: posix.fd_t) Io.InheritParentHandleError!void {
+    switch (native_os) {
+        .linux,
+        .dragonfly,
+        .freebsd,
+        .netbsd,
+        .openbsd,
+        .illumos,
+        .driverkit,
+        .ios,
+        .maccatalyst,
+        .macos,
+        .tvos,
+        .visionos,
+        .watchos,
+        => return setCloexec(handle),
+        else => return error.UnsupportedOperation,
+    }
+}
+
+fn inheritParentDir(userdata: ?*anyopaque, handle: Dir.Handle) Io.InheritParentHandleError!Dir {
+    const t: *Threaded = @ptrCast(@alignCast(userdata));
+    _ = t;
+    try inheritParentHandle(handle);
+    return .{ .handle = handle };
+}
+
+fn inheritParentFile(
+    userdata: ?*anyopaque,
+    handle: File.Handle,
+    flags: File.Flags,
+) Io.InheritParentHandleError!File {
+    const t: *Threaded = @ptrCast(@alignCast(userdata));
+    _ = t;
+    try inheritParentHandle(handle);
+    return .{ .handle = handle, .flags = flags };
 }
 
 pub fn environString(t: *Threaded, comptime name: []const u8) ?[:0]const u8 {

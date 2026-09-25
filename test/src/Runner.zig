@@ -132,8 +132,15 @@ pub fn runServer(runner: *Runner) ProtocolError {
                                 args_body[args_body_offset..][0..@sizeOf(std.Io.Dir.Handle)],
                             );
                             args_body_offset += @sizeOf(std.Io.Dir.Handle);
-                            const dir: std.Io.Dir = .{
-                                .handle = dir_handle.*,
+                            const dir = runner.io.vtable.inheritParentDir(
+                                runner.io.userdata,
+                                dir_handle.*,
+                            ) catch |err| switch (err) {
+                                error.Canceled => |e| return e,
+                                error.Unexpected => |e| return runner.fail(
+                                    "unable to inherit parent dir: {t}",
+                                    .{e},
+                                ),
                             };
                             switch (state) {
                                 .positional => {
@@ -171,9 +178,16 @@ pub fn runServer(runner: *Runner) ProtocolError {
                                 args_body[args_body_offset..][0..@sizeOf(std.Io.File.Handle)],
                             );
                             args_body_offset += @sizeOf(std.Io.File.Handle);
-                            const file: std.Io.File = .{
-                                .handle = file_handle.*,
-                                .flags = .{ .nonblocking = false },
+                            const file = runner.io.vtable.inheritParentFile(
+                                runner.io.userdata,
+                                file_handle.*,
+                                .{ .nonblocking = false },
+                            ) catch |err| switch (err) {
+                                error.Canceled => |e| return e,
+                                error.Unexpected => |e| return runner.fail(
+                                    "unable to inherit parent file: {t}",
+                                    .{e},
+                                ),
                             };
                             switch (state) {
                                 .positional => {
