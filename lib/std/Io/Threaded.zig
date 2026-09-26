@@ -13229,7 +13229,6 @@ fn netReceivePosix(
         @as(u32, if (flags.oob) posix.MSG.OOB else 0) |
         @as(u32, if (flags.peek) posix.MSG.PEEK else 0) |
         @as(u32, if (flags.trunc) posix.MSG.TRUNC else 0) |
-        posix.MSG.NOSIGNAL |
         @as(u32, if (nonblocking) posix.MSG.DONTWAIT else 0);
 
     var storage: PosixAddress = undefined;
