@@ -5093,3 +5093,7 @@ test "std.zon variants" {
         );
     }
 }
+
+test {
+    _ = Errors;
+}
