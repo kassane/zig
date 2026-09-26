@@ -2197,8 +2197,6 @@ test "std.zon tuples" {
 
 // Test sizes 0 to 3 since small sizes get parsed differently
 test "std.zon arrays and slices" {
-    if (builtin.zig_backend == .stage2_c) return error.SkipZigTest; // https://github.com/ziglang/zig/issues/20881
-
     const gpa = std.testing.allocator;
     var arena_allocator: ArenaAllocator = .init(gpa);
     defer arena_allocator.deinit();
