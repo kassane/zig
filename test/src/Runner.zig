@@ -859,10 +859,9 @@ fn handleCommand(
                                 .include_source_line = false,
                                 .include_log_text = true,
                             }, &error_aw.writer);
-                            std.testing.expectEqualStrings(
-                                expected,
-                                error_aw.written(),
-                            ) catch |err| switch (err) {
+                            const actual = error_aw.written();
+                            std.mem.replaceScalar(u8, actual, '\\', '/');
+                            std.testing.expectEqualStrings(expected, actual) catch |err| switch (err) {
                                 error.TestExpectedEqual => return runner.fail(
                                     "errors did not match expected",
                                     .{},
