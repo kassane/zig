@@ -841,7 +841,7 @@ const Parser = struct {
         }
 
         // Parse the elements and return the array
-        inline for (out, 0..) |*elem, i| {
+        for (out, 0..) |*elem, i| {
             try self.parseExprInto(nodes.at(@intCast(i)), elem, false);
         }
 
