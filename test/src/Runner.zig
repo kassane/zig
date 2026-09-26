@@ -1,6 +1,7 @@
 const assert = std.debug.assert;
 const std = @import("std");
 const Runner = @This();
+const zig_version_string = @import("builtin").zig_version_string;
 
 gpa: std.mem.Allocator,
 arena: *std.heap.ArenaAllocator,
@@ -51,24 +52,33 @@ fn deinit(runner: *Runner) void {
     runner.* = undefined;
 }
 
-const Fallible = error{AlreadyReported} || std.mem.Allocator.Error || std.Io.Cancelable;
-fn fail(runner: *Runner, comptime fmt: []const u8, args: anytype) Fallible {
+const FailError = error{AlreadyReported} || std.mem.Allocator.Error || std.Io.Cancelable;
+fn fail(runner: *Runner, comptime fmt: []const u8, args: anytype) FailError {
     return runner.failString(try runner.eb_wip.printString(fmt, args));
 }
-fn failString(runner: *Runner, msg: std.zig.ErrorBundle.String) Fallible {
+fn failString(runner: *Runner, msg: std.zig.ErrorBundle.String) FailError {
     try runner.eb_wip.addRootErrorMessage(.{
         .msg = msg,
     });
     return error.AlreadyReported;
 }
 
-pub const ProtocolError = Fallible || std.Io.Reader.Error || std.Io.Writer.Error;
+pub const ProtocolError = error{
+    ServerReadFailed,
+    ServerWriteFailed,
+    ServerEndOfStream,
+} || FailError;
 pub fn runServer(runner: *Runner) ProtocolError {
-    try runner.server.serveStringMessage(.zig_version, @import("builtin").zig_version_string);
+    runner.server.serveStringMessage(.zig_version, zig_version_string) catch |err| switch (err) {
+        error.WriteFailed => return error.ServerWriteFailed,
+    };
     while (true) {
         _ = runner.arena.reset(.retain_capacity);
         const arena = runner.arena.allocator();
-        const hdr = try runner.server.receiveMessage();
+        const hdr = runner.server.receiveMessage() catch |err| switch (err) {
+            error.ReadFailed => return error.ServerReadFailed,
+            error.EndOfStream => return error.ServerEndOfStream,
+        };
         switch (hdr.tag) {
             else => |tag| return runner.fail("unsupported message: {t}", .{tag}),
             .exit => std.process.exit(0),
@@ -273,16 +283,20 @@ pub fn runServer(runner: *Runner) ProtocolError {
             .query_test_metadata => {
                 const expected_panic_msgs = try arena.alloc(u32, runner.args.targets.items.len);
                 @memset(expected_panic_msgs, 0);
-                try runner.server.serveTestMetadata(.{
+                runner.server.serveTestMetadata(.{
                     .names = runner.args.targets.items,
                     .expected_panic_msgs = expected_panic_msgs,
                     .string_bytes = runner.args.target_bytes.items,
-                });
+                }) catch |err| switch (err) {
+                    error.WriteFailed => return error.ServerWriteFailed,
+                };
             },
             .run_test => {
                 const test_index = runner.server.receiveBody_u32() catch unreachable;
-                try runner.server.serveBodylessMessage(.test_started);
-                try runner.server.serveTestResults(.{
+                runner.server.serveBodylessMessage(.test_started) catch |err| switch (err) {
+                    error.WriteFailed => return error.ServerWriteFailed,
+                };
+                runner.server.serveTestResults(.{
                     .index = test_index,
                     .flags = .{
                         .status = if (runner.testOne(test_index))
@@ -290,14 +304,18 @@ pub fn runServer(runner: *Runner) ProtocolError {
                         else |err| status: switch (err) {
                             error.Canceled,
                             error.OutOfMemory,
-                            error.ReadFailed,
-                            error.WriteFailed,
+                            error.ServerWriteFailed,
                             => |e| return e,
                             error.AlreadyReported => {
                                 var eb = try runner.eb_wip.toOwnedBundle("");
                                 defer eb.deinit(runner.gpa);
                                 assert(eb.errorMessageCount() > 0); // already reported what?
-                                try runner.server.serveErrorBundle(.error_bundle, eb);
+                                runner.server.serveErrorBundle(
+                                    .error_bundle,
+                                    eb,
+                                ) catch |server_err| switch (server_err) {
+                                    error.WriteFailed => return error.ServerWriteFailed,
+                                };
                                 const eb_wip: std.zig.ErrorBundle.Wip = try .init(runner.gpa);
                                 runner.eb_wip.deinit();
                                 runner.eb_wip = eb_wip;
@@ -309,7 +327,9 @@ pub fn runServer(runner: *Runner) ProtocolError {
                         .log_err_count = 0,
                         .leak_count = 0,
                     },
-                });
+                }) catch |err| switch (err) {
+                    error.WriteFailed => return error.ServerWriteFailed,
+                };
                 assert(runner.eb_wip.root_list.items.len == 0); // failed to report
             },
         }
@@ -317,6 +337,15 @@ pub fn runServer(runner: *Runner) ProtocolError {
 }
 
 fn discoverInput(
+    runner: *Runner,
+    dir: std.zig.Server.Message.InputDir,
+    sub_path: []const u8,
+) error{ServerWriteFailed}!void {
+    return runner.discoverInputInner(dir, sub_path) catch |err| switch (err) {
+        error.WriteFailed => return error.ServerWriteFailed,
+    };
+}
+fn discoverInputInner(
     runner: *Runner,
     dir: std.zig.Server.Message.InputDir,
     sub_path: []const u8,
@@ -435,14 +464,14 @@ pub const SourceReader = struct {
         src_loc: []const u8,
         comptime fmt: []const u8,
         args: anytype,
-    ) Fallible {
+    ) FailError {
         return s.failString(src_loc, try s.eb_wip.printString(fmt, args));
     }
     fn failString(
         s: *SourceReader,
         src_loc: []const u8,
         msg: std.zig.ErrorBundle.String,
-    ) Fallible {
+    ) FailError {
         const line: u32, const column: u32, const source_line = src_loc: {
             const pos = src_loc.ptr - s.interface.buffer.ptr;
             const end = std.mem.findScalarPos(u8, s.interface.buffer, pos, '\n') orelse
@@ -531,8 +560,8 @@ const Update = struct {
 
 const TestError = error{
     SkipTest,
-} || Fallible || std.Io.Reader.ShortError || std.Io.Writer.Error;
-fn testOne(runner: *Runner, test_index: u32) TestError!void {
+} || FailError;
+fn testOne(runner: *Runner, test_index: u32) (error{ServerWriteFailed} || TestError)!void {
     const target_query =
         std.mem.sliceTo(runner.args.target_bytes.items[runner.args.targets.items[test_index]..], 0);
     const manifest_file = runner.args.manifest_file orelse
@@ -660,16 +689,24 @@ fn testOne(runner: *Runner, test_index: u32) TestError!void {
             error.OutOfMemory,
             error.AlreadyReported,
             error.SkipTest,
-            error.WriteFailed,
             => |e| return e,
-            error.ReadFailed => switch (contents_impl) {
+            error.ContentsReadFailed => switch (contents_impl) {
                 .ending => unreachable,
-                .dr => return runner.fail("unable to read manifest: {t}", .{manifest_fr.err.?}),
-                .fr => |fr| return runner.fail("unable to read contents file: {t}", .{fr.err.?}),
+                .dr => switch (manifest_fr.err orelse return error.OutOfMemory) {
+                    error.Canceled => |e| return e,
+                    else => |e| return runner.fail("unable to read manifest: {t}", .{e}),
+                },
+                .fr => |fr| switch (fr.err.?) {
+                    error.Canceled => |e| return e,
+                    else => |e| return runner.fail("unable to read contents file: {t}", .{e}),
+                },
             },
         };
     } else |err| switch (err) {
-        error.ReadFailed => |e| return e,
+        error.ReadFailed => switch (manifest_fr.err orelse return error.OutOfMemory) {
+            error.Canceled => |e| return e,
+            else => |e| return runner.fail("unable to read manifest: {t}", .{e}),
+        },
         error.StreamTooLong => unreachable,
         error.EndOfStream => if (skip_delimiter)
             return runner.fail("manifest missing \"#}}\" delimiter", .{}),
@@ -687,7 +724,7 @@ fn handleCommand(
     cmd: Command,
     arg: ?[]const u8,
     contents_r: *std.Io.Reader,
-) TestError!void {
+) (error{ContentsReadFailed} || TestError)!void {
     var name_buffer: [std.Progress.Node.max_name_len]u8 = undefined;
     const cmd_prog_node = runner.prog_node.start(std.mem.print(&name_buffer, "#{t}{s}{s}", .{
         cmd, if (arg) |_| " " else "", arg orelse "",
@@ -702,9 +739,8 @@ fn handleCommand(
             cmd_src_loc,
             "\"#skip\" must appear before other commands",
             .{},
-        ) else if (std.mem.eql(u8, update.target_query, arg.?))
-            return error.SkipTest,
-        .exe, .lib, .obj => try runner.spawnCompiler(&update.compiler, update.src_dir, switch (cmd) {
+        ) else if (std.mem.eql(u8, update.target_query, arg.?)) return error.SkipTest,
+        .exe, .lib, .obj => runner.spawnCompiler(&update.compiler, update.src_dir, switch (cmd) {
             else => unreachable,
             .exe => .Exe,
             .lib => .Lib,
@@ -746,7 +782,10 @@ fn handleCommand(
                 .mode = mode,
                 .backend = backend,
             };
-        }),
+        }) catch |err| switch (err) {
+            error.Canceled, error.OutOfMemory, error.AlreadyReported => |e| return e,
+            error.ReadFailed => return error.ContentsReadFailed,
+        },
         .write => {
             const file = update.src_dir.createFile(runner.io, arg.?, .{}) catch |err| switch (err) {
                 error.Canceled => |e| return e,
@@ -756,7 +795,7 @@ fn handleCommand(
             var fw_buffer: [512]u8 = undefined;
             var fw = file.writer(runner.io, &fw_buffer);
             _ = contents_r.streamRemaining(&fw.interface) catch |err| switch (err) {
-                error.ReadFailed => |e| return e,
+                error.ReadFailed => return error.ContentsReadFailed,
                 error.WriteFailed => switch (fw.err.?) {
                     error.Canceled => |e| return e,
                     else => |e| return update.manifest_sr.fail(
@@ -797,7 +836,9 @@ fn handleCommand(
             ));
             update.prog_node.end();
             update.prog_node = runner.prog_node.start(
-                switch (try contents_r.readSliceShort(&name_buffer)) {
+                switch (contents_r.readSliceShort(&name_buffer) catch |err| switch (err) {
+                    error.ReadFailed => return error.ContentsReadFailed,
+                }) {
                     0 => switch (update.num) {
                         0 => "initial update",
                         else => |num| std.mem.print(&name_buffer, "update {d}", .{num}) catch
@@ -807,10 +848,17 @@ fn handleCommand(
                 },
                 0,
             );
-            _ = try contents_r.discardRemaining();
+            _ = contents_r.discardRemaining() catch |err| switch (err) {
+                error.ReadFailed => return error.ContentsReadFailed,
+            };
             if (comp.state != .idle)
                 return update.manifest_sr.fail(cmd_src_loc, "missing \"#check\"", .{});
-            try comp.client.serveBodylessMessage(.update);
+            comp.client.serveBodylessMessage(.update) catch |err| switch (err) {
+                error.WriteFailed => switch (comp.fw.err.?) {
+                    error.Canceled => |e| return e,
+                    else => |e| return runner.fail("unable to send message to compiler: {t}", .{e}),
+                },
+            };
             comp.state = .update;
             update.mtime = update.mtime.addDuration(.fromSeconds(2));
             update.num += 1;
@@ -820,7 +868,8 @@ fn handleCommand(
                 return update.manifest_sr.fail(arg.?, "unknown check", .{});
             const expected =
                 contents_r.allocRemaining(runner.gpa, .unlimited) catch |err| switch (err) {
-                    error.OutOfMemory, error.ReadFailed => |e| return e,
+                    error.OutOfMemory => |e| return e,
+                    error.ReadFailed => return error.ContentsReadFailed,
                     error.StreamTooLong => unreachable, // .unlimited
                 };
             defer runner.gpa.free(expected);
@@ -860,11 +909,13 @@ fn handleCommand(
                         .errors => {
                             var error_aw: std.Io.Writer.Allocating = .init(runner.gpa);
                             defer error_aw.deinit();
-                            try eb.renderToWriter(.{
+                            eb.renderToWriter(.{
                                 .include_reference_trace = false,
                                 .include_source_line = false,
                                 .include_log_text = true,
-                            }, &error_aw.writer);
+                            }, &error_aw.writer) catch |err| switch (err) {
+                                error.WriteFailed => return error.OutOfMemory,
+                            };
                             const actual = error_aw.written();
                             std.mem.replaceScalar(u8, actual, '\\', '/');
                             std.testing.expectEqualStrings(expected, actual) catch |err| switch (err) {
@@ -900,7 +951,9 @@ fn handleCommand(
             return runner.fail("compiler failed to send terminating error_bundle", .{});
         },
     }
-    assert(try contents_r.discardRemaining() == 0);
+    assert(contents_r.discardRemaining() catch |err| switch (err) {
+        error.ReadFailed => return error.ContentsReadFailed,
+    } == 0);
     switch (cmd) {
         .todo, .skip => {},
         else => update.allow_skip = false,
@@ -914,7 +967,7 @@ fn spawnCompiler(
     output_mode: std.lang.OutputMode,
     args_r: *std.Io.Reader,
     target: Compiler.Target,
-) (Fallible || std.Io.Reader.ShortError)!void {
+) (std.Io.Reader.ShortError || FailError)!void {
     const gpa = runner.gpa;
     const arena = runner.arena.allocator();
     if (compiler.*) |*comp| {
@@ -1072,7 +1125,7 @@ const Compiler = struct {
         };
     };
 
-    fn receiveMessage(comp: *Compiler) Fallible!?struct {
+    fn receiveMessage(comp: *Compiler) FailError!?struct {
         tag: std.zig.Server.Message.Tag,
         body: []const u8,
     } {
@@ -1107,7 +1160,7 @@ const Compiler = struct {
         expected: []const u8,
         src_dir: std.Io.Dir,
         digest: *const std.Build.Cache.BinDigest,
-    ) Fallible!void {
+    ) FailError!void {
         const runner = comp.runner;
         const gpa = runner.gpa;
         const arena = runner.arena.allocator();
@@ -1288,7 +1341,7 @@ const Compiler = struct {
         }
     }
 
-    fn compileC(parent_comp: *Compiler, src_dir: std.Io.Dir, c_path: []const u8) Fallible![]const u8 {
+    fn compileC(parent_comp: *Compiler, src_dir: std.Io.Dir, c_path: []const u8) FailError![]const u8 {
         const runner = parent_comp.runner;
         const arena = runner.arena.allocator();
         var compiler: ?Compiler = null;
@@ -1308,7 +1361,10 @@ const Compiler = struct {
         };
         const comp = &compiler.?;
         comp.client.serveBodylessMessage(.update) catch |err| switch (err) {
-            error.WriteFailed => return runner.fail("unable to send message: {t}", .{comp.fw.err.?}),
+            error.WriteFailed => switch (comp.fw.err.?) {
+                error.Canceled => |e| return e,
+                else => |e| return runner.fail("unable to send message: {t}", .{e}),
+            },
         };
         comp.state = .update;
         var out_path: ?[]const u8 = null;
@@ -1348,7 +1404,7 @@ const Compiler = struct {
         return out_path.?;
     }
 
-    fn exit(comp: *Compiler) Fallible!void {
+    fn exit(comp: *Compiler) FailError!void {
         const runner = comp.runner;
         comp.client.serveBodylessMessage(.exit) catch |err| switch (err) {
             error.WriteFailed => switch (comp.fw.err.?) {
@@ -1465,9 +1521,15 @@ pub fn main(init: std.process.Init) (std.mem.Allocator.Error || std.Io.Cancelabl
             defer runner.deinit();
             switch (runner.runServer()) {
                 error.Canceled, error.OutOfMemory => |e| return e,
-                error.ReadFailed => fatal("unable to receive message: {t}", .{stdin.err.?}),
-                error.EndOfStream => fatal("no more messages", .{}),
-                error.WriteFailed => fatal("unable to send message: {t}", .{stdout.err.?}),
+                error.ServerReadFailed => switch (stdin.err.?) {
+                    error.Canceled => |e| return e,
+                    else => |e| fatal("unable to receive message: {t}", .{e}),
+                },
+                error.ServerWriteFailed => switch (stdout.err.?) {
+                    error.Canceled => |e| return e,
+                    else => |e| fatal("unable to send message: {t}", .{e}),
+                },
+                error.ServerEndOfStream => fatal("no more messages", .{}),
                 error.AlreadyReported => {
                     var eb = try runner.eb_wip.toOwnedBundle("");
                     defer eb.deinit(init.gpa);
@@ -1590,9 +1652,15 @@ pub fn main(init: std.process.Init) (std.mem.Allocator.Error || std.Io.Cancelabl
     };
     const success = runClient(init.gpa, arena, init.io, &client, &args) catch |err| switch (err) {
         error.OutOfMemory => |e| return e,
-        error.ReadFailed => fatal("unable to receive message: {t}", .{child_reader.err.?}),
+        error.ReadFailed => switch (child_reader.err.?) {
+            error.Canceled => |e| return e,
+            else => |e| fatal("unable to receive message: {t}", .{e}),
+        },
+        error.WriteFailed => switch (child_writer.err.?) {
+            error.Canceled => |e| return e,
+            else => |e| fatal("unable to send message: {t}", .{e}),
+        },
         error.EndOfStream => fatal("no more messages", .{}),
-        error.WriteFailed => fatal("unable to send message: {t}", .{child_writer.err.?}),
     };
     _ = child.wait(init.io) catch |err| switch (err) {
         error.Canceled => |e| return e,
@@ -1734,12 +1802,11 @@ fn runClient(
         switch (hdr.tag) {
             else => try client.in.discardAll(hdr.bytes_len),
             .zig_version => {
-                const expected = @import("builtin").zig_version_string;
-                const actual = try client.in.take(hdr.bytes_len);
-                if (!std.mem.eql(u8, expected, actual)) {
+                const actual_version = try client.in.take(hdr.bytes_len);
+                if (!std.mem.eql(u8, zig_version_string, actual_version)) {
                     try stderr.print(
                         "error: zig version mismatch compiler test runner vs compiler: {q} vs {q}\n",
-                        .{ expected, actual },
+                        .{ zig_version_string, actual_version },
                     );
                     try stderr.flush();
                     std.process.exit(1);
