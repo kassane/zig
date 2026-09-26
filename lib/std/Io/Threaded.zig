@@ -7685,6 +7685,8 @@ fn dirRenameWindowsInner(
     defer w.CloseHandle(src_fd);
 
     var rc: w.NTSTATUS = undefined;
+    var attempt: u5 = 0;
+
     // FileRenameInformationEx has varying levels of support:
     // - FILE_RENAME_INFORMATION_EX requires >= win10_rs1
     //   (INVALID_INFO_CLASS is returned if not supported)
@@ -7708,24 +7710,43 @@ fn dirRenameWindowsInner(
         });
         var io_status_block: w.IO_STATUS_BLOCK = undefined;
         const rename_info_buf = rename_info.toBuffer();
-        rc = w.ntdll.NtSetInformationFile(
-            src_fd,
-            &io_status_block,
-            rename_info_buf.ptr,
-            @intCast(rename_info_buf.len),
-            .RenameEx,
-        );
-        switch (rc) {
-            .SUCCESS => return,
-            // The filesystem does not support FileDispositionInformationEx
-            .INVALID_PARAMETER,
-            // The operating system does not support FileDispositionInformationEx
-            .INVALID_INFO_CLASS,
-            // The operating system does not support one of the flags
-            .NOT_SUPPORTED,
-            => break :need_fallback true,
-            // For all other statuses, fall down to the switch below to handle them.
-            else => break :need_fallback false,
+        var syscall: Syscall = try .start();
+        while (true) {
+            rc = w.ntdll.NtSetInformationFile(
+                src_fd,
+                &io_status_block,
+                rename_info_buf.ptr,
+                @intCast(rename_info_buf.len),
+                .RenameEx,
+            );
+            switch (rc) {
+                // For all other statuses, fall down to the switch below to handle them.
+                else => {
+                    syscall.finish();
+                    break :need_fallback false;
+                },
+                .CANCELLED => try syscall.checkCancel(),
+                // The filesystem does not support FileDispositionInformationEx
+                .INVALID_PARAMETER,
+                // The operating system does not support FileDispositionInformationEx
+                .INVALID_INFO_CLASS,
+                // The operating system does not support one of the flags
+                .NOT_SUPPORTED,
+                => {
+                    syscall.finish();
+                    break :need_fallback true;
+                },
+                .ACCESS_DENIED => {
+                    syscall.finish();
+                    if (max_windows_kernel_bug_retries - attempt == 0) break :need_fallback false;
+                    try parking_sleep.sleep(.{ .duration = .{
+                        .raw = .fromMilliseconds((@as(u32, 1) << attempt) >> 1),
+                        .clock = .awake,
+                    } });
+                    attempt += 1;
+                    syscall = try .start();
+                },
+            }
         }
     };
 
@@ -7737,13 +7758,33 @@ fn dirRenameWindowsInner(
         });
         var io_status_block: w.IO_STATUS_BLOCK = undefined;
         const rename_info_buf = rename_info.toBuffer();
-        rc = w.ntdll.NtSetInformationFile(
-            src_fd,
-            &io_status_block,
-            rename_info_buf.ptr,
-            @intCast(rename_info_buf.len),
-            .Rename,
-        );
+        var syscall: Syscall = try .start();
+        while (true) {
+            rc = w.ntdll.NtSetInformationFile(
+                src_fd,
+                &io_status_block,
+                rename_info_buf.ptr,
+                @intCast(rename_info_buf.len),
+                .Rename,
+            );
+            switch (rc) {
+                else => {
+                    syscall.finish();
+                    break;
+                },
+                .CANCELLED => try syscall.checkCancel(),
+                .ACCESS_DENIED => {
+                    syscall.finish();
+                    if (max_windows_kernel_bug_retries - attempt == 0) break;
+                    try parking_sleep.sleep(.{ .duration = .{
+                        .raw = .fromMilliseconds((@as(u32, 1) << attempt) >> 1),
+                        .clock = .awake,
+                    } });
+                    attempt += 1;
+                    syscall = try .start();
+                },
+            }
+        }
     }
 
     switch (rc) {
