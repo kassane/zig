@@ -7066,7 +7066,7 @@ fn uavMapIndex(
     const abi_align = Value.fromInterned(uav_val).typeOf(zcu).abiAlignment(zcu);
     const resolved_align: Alignment = switch (uav_align) {
         .none => .fromIp(abi_align),
-        else => |a| .fromIp(a.minStrict(abi_align)),
+        else => |a| .fromIp(a.maxStrict(abi_align)),
     };
 
     const uav_gop = elf.uavs.getOrPutAssumeCapacity(uav_val);
