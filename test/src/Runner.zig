@@ -574,6 +574,12 @@ fn testOne(runner: *Runner, test_index: u32) TestError!void {
         update.src_dir.close(runner.io);
         update.prog_node.end();
     }
+
+    // hack around `std.Io.Reader` interface bugs by ensuring the
+    // buffer is larger than the longest supported manifest line
+    try update.manifest_sr.line_aw.ensureTotalCapacityPrecise(512);
+    update.manifest_sr.updateBuffer();
+
     var skip_delimiter = false;
     while (update.manifest_sr.interface.takeSentinel('\n')) |line| {
         var line_it = std.mem.tokenizeScalar(u8, line, ' ');
