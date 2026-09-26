@@ -5766,7 +5766,7 @@ fn flushImplib(
     try file_writer.interface.flush();
 }
 
-fn reportUndefs(coff: *Coff, tid: Zcu.PerThread.Id) !void {
+fn reportUndefs(coff: *Coff) !void {
     const comp = coff.base.comp;
     const gpa = comp.gpa;
     const max_notes = 4;
@@ -5887,14 +5887,8 @@ fn reportUndefs(coff: *Coff, tid: Zcu.PerThread.Id) !void {
                                     const ip = &comp.zcu.?.intern_pool;
                                     break :format ip.getNav(val.navIndex(coff)).fqn.fmt(ip);
                                 },
-                                .uav => Value.fromInterned(val.uavValue(coff)).fmtValue(.{
-                                    .zcu = coff.base.comp.zcu.?,
-                                    .tid = tid,
-                                }),
-                                inline .lazy_code, .lazy_const_data => Type.fromInterned(val.lazySymbol(coff).ty).fmt(.{
-                                    .zcu = coff.base.comp.zcu.?,
-                                    .tid = tid,
-                                }),
+                                .uav => Value.fromInterned(val.uavValue(coff)).fmtValue(coff.base.comp.zcu.?),
+                                inline .lazy_code, .lazy_const_data => Type.fromInterned(val.lazySymbol(coff).ty).fmt(coff.base.comp.zcu.?),
                                 else => unreachable,
                             },
                         });
@@ -5927,7 +5921,7 @@ pub fn flush(
 
     const comp = coff.base.comp;
 
-    while (try coff.resolve(tid)) {}
+    while (try coff.resolve()) {}
     while (try coff.idle(tid)) {}
 
     // This has to occur after all other flushMoved / flushResized have resolved,
@@ -5951,7 +5945,7 @@ pub fn flush(
     while (try coff.idle(tid)) {}
 
     if (coff.isImage())
-        try coff.reportUndefs(tid);
+        try coff.reportUndefs();
 
     if (comp.emit_implib) |implib_file|
         coff.flushImplib(implib_file) catch |err|
@@ -5970,7 +5964,7 @@ pub fn flush(
 /// Runs a single "resolution" task.
 /// These are tasks that need to modify the node structure in some way.
 /// They must run in a defined order with respect to linker tasks.
-fn resolve(coff: *Coff, tid: Zcu.PerThread.Id) !bool {
+fn resolve(coff: *Coff) !bool {
     const comp = coff.base.comp;
     task: {
         while (coff.section_merge_pending_index < coff.section_merges.count()) {
@@ -6046,7 +6040,6 @@ fn resolve(coff: *Coff, tid: Zcu.PerThread.Id) !bool {
             const si = coff.symbol_table.symbols.keys()[coff.symbol_table.pending_symbol_index];
             const sym = si.get(coff);
             const sub_prog_node = coff.idleProgNode(
-                tid,
                 coff.symbol_prog_node,
                 if (sym.ni.unwrap()) |sym_ni|
                     coff.getNode(sym_ni)
@@ -6077,6 +6070,7 @@ fn resolve(coff: *Coff, tid: Zcu.PerThread.Id) !bool {
 }
 
 pub fn idle(coff: *Coff, tid: Zcu.PerThread.Id) !bool {
+    _ = tid;
     // Idle tasks should not modify create / modify nodes, otherwise the output is not reproducible.
     coff.mf.nodes_lock.lock();
     defer coff.mf.nodes_lock.unlock();
@@ -6087,7 +6081,7 @@ pub fn idle(coff: *Coff, tid: Zcu.PerThread.Id) !bool {
         if (coff.input_section_pending_index < coff.input_sections.items.len) {
             const isi: Node.InputSection.Index = @fromBackingInt(@intCast(coff.input_section_pending_index));
             coff.input_section_pending_index += 1;
-            const sub_prog_node = coff.idleProgNode(tid, coff.input_prog_node, coff.getNode(isi.symbol(coff).node(coff)));
+            const sub_prog_node = coff.idleProgNode(coff.input_prog_node, coff.getNode(isi.symbol(coff).node(coff)));
             defer sub_prog_node.end();
             coff.flushInputSection(isi) catch |err| switch (err) {
                 else => |e| {
@@ -6112,7 +6106,7 @@ pub fn idle(coff: *Coff, tid: Zcu.PerThread.Id) !bool {
             const clean_next_moved = ni.cleanNextMoved(&coff.mf);
             if (!clean_moved and !clean_resized and !clean_next_moved) continue;
             const sub_prog_node =
-                coff.idleProgNode(tid, coff.mf.update_prog_node, coff.getNode(ni));
+                coff.idleProgNode(coff.mf.update_prog_node, coff.getNode(ni));
             defer sub_prog_node.end();
             if (clean_moved) try coff.flushMoved(ni);
             if (clean_resized) try coff.flushResized(ni);
@@ -6120,7 +6114,6 @@ pub fn idle(coff: *Coff, tid: Zcu.PerThread.Id) !bool {
         }
         while (coff.pending_members.pop()) |pending_mi| {
             const sub_prog_node = coff.idleProgNode(
-                tid,
                 coff.symbol_prog_node,
                 coff.getNode(pending_mi.key.get(coff).content_ni),
             );
@@ -6131,7 +6124,6 @@ pub fn idle(coff: *Coff, tid: Zcu.PerThread.Id) !bool {
         if (coff.exports_complete and coff.export_table.pending_sort) {
             defer coff.export_table.pending_sort = false;
             const sub_prog_node = coff.idleProgNode(
-                tid,
                 coff.synth_prog_node,
                 coff.getNode(coff.export_table.ni),
             );
@@ -6150,7 +6142,6 @@ pub fn idle(coff: *Coff, tid: Zcu.PerThread.Id) !bool {
 
 fn idleProgNode(
     coff: *Coff,
-    tid: Zcu.PerThread.Id,
     prog_node: std.Progress.Node,
     node: Node,
 ) std.Progress.Node {
@@ -6173,10 +6164,7 @@ fn idleProgNode(
             break :name ip.getNav(nmi.navIndex(coff)).fqn.toSlice(ip);
         },
         .uav => |umi| std.mem.print(&name, "{f}", .{
-            Value.fromInterned(umi.uavValue(coff)).fmtValue(.{
-                .zcu = coff.base.comp.zcu.?,
-                .tid = tid,
-            }),
+            Value.fromInterned(umi.uavValue(coff)).fmtValue(coff.base.comp.zcu.?),
         }) catch &name,
         .archive_member => |mi| &mi.get(coff).headerPtr(coff).name,
     }, 0);
@@ -6185,7 +6173,7 @@ fn idleProgNode(
 fn genPending(coff: *Coff, pt: Zcu.PerThread) Error!void {
     const comp = pt.zcu.comp;
     while (coff.pending_uavs.pop()) |pending_uav| {
-        const sub_prog_node = coff.idleProgNode(pt.tid, coff.const_prog_node, .{ .uav = pending_uav.key });
+        const sub_prog_node = coff.idleProgNode(coff.const_prog_node, .{ .uav = pending_uav.key });
         defer sub_prog_node.end();
         coff.genUav(pt, pending_uav.key, pending_uav.value.alignment) catch |err| switch (err) {
             else => |e| return e,
@@ -6845,7 +6833,7 @@ fn genLazy(coff: *Coff, pt: Zcu.PerThread, lmr: Node.LazyMapRef) !void {
     const sub_prog_node = coff.synth_prog_node.start(
         std.mem.print(&name, "lazy {s} for {f}", .{
             kind,
-            Type.fromInterned(lazy.ty).fmt(pt),
+            Type.fromInterned(lazy.ty).fmt(coff.base.comp.zcu.?),
         }) catch &name,
         0,
     );
@@ -7461,14 +7449,14 @@ fn updateExportInner(
     switch (exp.exported) {
         .nav => |nav| log.debug("updateExports({f}) = {d}", .{ ip.getNav(nav).fqn.fmt(ip), exported_si }),
         .uav => |uav| log.debug("updateExports(@as({f}, {f})) = {d}", .{
-            Type.fromInterned(ip.typeOf(uav)).fmt(pt),
-            Value.fromInterned(uav).fmtValue(pt),
+            Type.fromInterned(ip.typeOf(uav)).fmt(zcu),
+            Value.fromInterned(uav).fmtValue(zcu),
             exported_si,
         }),
     }
 
     try coff.genPending(pt);
-    while (try coff.resolve(pt.tid)) {}
+    while (try coff.resolve()) {}
     while (try coff.idle(pt.tid)) {}
 
     const machine = coff.targetLoad(&coff.headerPtr().machine);
@@ -7627,7 +7615,7 @@ pub fn dump(coff: *Coff, w: *Io.Writer, tid: Zcu.PerThread.Id) Io.Writer.Error!l
             try coff.printSection(w, name, sec.si);
         try w.writeAll("Symbol table:\n");
         for (1..coff.symbols.items.len) |si|
-            try coff.printSymbol(w, tid, @fromBackingInt(@intCast(si)));
+            try coff.printSymbol(w, @fromBackingInt(@intCast(si)));
 
         return .enabled;
     }
@@ -7648,7 +7636,6 @@ fn printSection(coff: *Coff, w: *Io.Writer, name: String, si: Symbol.Index) Io.W
 fn printSymbol(
     coff: *Coff,
     w: *Io.Writer,
-    tid: Zcu.PerThread.Id,
     si: Symbol.Index,
 ) Io.Writer.Error!void {
     const sym = si.get(coff);
@@ -7687,7 +7674,7 @@ fn printSymbol(
         try w.print("G {f}\n", .{fmtGlobalName(coff, sym.gmi)});
     } else {
         try w.writeAll("| ");
-        try coff.printNodeName(w, tid, coff.getNode(sym.ni.unwrap().?));
+        try coff.printNodeName(w, coff.getNode(sym.ni.unwrap().?));
         if (sym.flags.extra_tag == .isli)
             try w.print(" | {s}", .{sym.extra.isli.name(coff).toSlice(coff)});
         try w.writeByte('\n');
@@ -7712,7 +7699,6 @@ fn globalNameEscape(data: FmtGlobalName, w: *std.Io.Writer) std.Io.Writer.Error!
 fn printNodeName(
     coff: *Coff,
     w: *std.Io.Writer,
-    tid: Zcu.PerThread.Id,
     node: Node,
 ) Io.Writer.Error!void {
     switch (node) {
@@ -7754,7 +7740,7 @@ fn printNodeName(
             const ip = &zcu.intern_pool;
             const nav = ip.getNav(nmi.navIndex(coff));
             try w.print("({f}, {f})", .{
-                Type.fromInterned(ip.typeOf(nav.resolved.?.value)).fmt(.{ .zcu = zcu, .tid = tid }),
+                Type.fromInterned(ip.typeOf(nav.resolved.?.value)).fmt(zcu),
                 nav.fqn.fmt(ip),
             });
         },
@@ -7762,15 +7748,12 @@ fn printNodeName(
             const zcu = coff.base.comp.zcu.?;
             const val: Value = .fromInterned(umi.uavValue(coff));
             try w.print("({f}, {f})", .{
-                val.typeOf(zcu).fmt(.{ .zcu = zcu, .tid = tid }),
-                val.fmtValue(.{ .zcu = zcu, .tid = tid }),
+                val.typeOf(zcu).fmt(zcu),
+                val.fmtValue(zcu),
             });
         },
         inline .lazy_code, .lazy_const_data => |lmi| try w.print("({f})", .{
-            Type.fromInterned(lmi.lazySymbol(coff).ty).fmt(.{
-                .zcu = coff.base.comp.zcu.?,
-                .tid = tid,
-            }),
+            Type.fromInterned(lmi.lazySymbol(coff).ty).fmt(coff.base.comp.zcu.?),
         }),
         .builtin => |si| {
             const sym = si.get(coff);
@@ -7789,7 +7772,7 @@ pub fn printNode(
     const node = coff.getNode(ni);
     try w.splatByteAll(' ', indent);
     try w.writeAll(@tagName(node));
-    try coff.printNodeName(w, tid, node);
+    try coff.printNodeName(w, node);
     {
         const mf_node = &coff.mf.nodes.items[@backingInt(ni)];
         const off, const size = mf_node.location().resolve(&coff.mf);

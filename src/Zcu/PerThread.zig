@@ -3471,7 +3471,7 @@ fn analyzeFuncBodyInner(
             &inner_block,
             inner_block.nodeOffset(.zero),
             "cannot resolve inferred error set of {s} function type '{f}'",
-            .{ description, fn_ty.fmt(pt) },
+            .{ description, fn_ty.fmt(zcu) },
         );
     }
 
@@ -4587,6 +4587,6 @@ fn printVerboseAir(
     const zcu = pt.zcu;
     const ip = &zcu.intern_pool;
     try w.print("# Begin Function AIR: {f}:\n", .{fqn.fmt(ip)});
-    try air.write(w, pt, liveness);
+    try air.write(w, zcu, liveness);
     try w.print("# End Function AIR: {f}\n\n", .{fqn.fmt(ip)});
 }
