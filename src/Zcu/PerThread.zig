@@ -1317,12 +1317,15 @@ fn analyzeComptimeUnit(pt: Zcu.PerThread, cu_id: InternPool.ComptimeUnit.Id) Zcu
         .inlining = null,
         .comptime_reason = .{ .reason = .{
             .src = .{
-                .base_node_inst = comptime_unit.zir_index,
+                .baseline = .{ .inst = comptime_unit.zir_index, .node = .main },
                 .offset = .{ .token_offset = .zero },
             },
             .r = .{ .simple = .comptime_keyword },
         } },
-        .src_base_inst = comptime_unit.zir_index,
+        .src_baseline = .{
+            .inst = comptime_unit.zir_index,
+            .node = .main,
+        },
         .type_name_ctx = try ip.getOrPutStringFmt(gpa, io, pt.tid, "{f}.comptime", .{
             parent_ns.name.fmt(ip),
         }, .no_embedded_nulls),
@@ -1723,7 +1726,10 @@ fn analyzeNavVal(
         .instructions = .empty,
         .inlining = null,
         .comptime_reason = undefined, // set below
-        .src_base_inst = old_nav.analysis.?.zir_index,
+        .src_baseline = .{
+            .inst = old_nav.analysis.?.zir_index,
+            .node = .main,
+        },
         .type_name_ctx = old_nav.name,
         .type_fqn_ctx = old_nav.fqn,
     };
@@ -2093,7 +2099,10 @@ fn analyzeNavType(
         .instructions = .empty,
         .inlining = null,
         .comptime_reason = undefined, // set below
-        .src_base_inst = old_nav.analysis.?.zir_index,
+        .src_baseline = .{
+            .inst = old_nav.analysis.?.zir_index,
+            .node = .main,
+        },
         .type_name_ctx = old_nav.name,
         .type_fqn_ctx = old_nav.fqn,
     };
@@ -3373,7 +3382,10 @@ fn analyzeFuncBodyInner(
         .instructions = .empty,
         .inlining = null,
         .comptime_reason = null,
-        .src_base_inst = decl_analysis.zir_index,
+        .src_baseline = .{
+            .inst = decl_analysis.zir_index,
+            .node = .main,
+        },
         .type_name_ctx = func_nav.name,
         .type_fqn_ctx = func_nav.fqn,
     };
@@ -3511,7 +3523,7 @@ fn analyzeFuncBodyInner(
     // can be emitted here.
     if (sema.fn_ret_ty_ies) |ies| {
         sema.resolveInferredErrorSetPtr(&inner_block, .{
-            .base_node_inst = inner_block.src_base_inst,
+            .baseline = inner_block.src_baseline,
             .offset = Zcu.LazySrcLoc.Offset.nodeOffset(.zero),
         }, ies) catch |err| switch (err) {
             error.ComptimeReturn => unreachable,
