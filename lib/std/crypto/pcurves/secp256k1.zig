@@ -367,23 +367,18 @@ pub const Secp256k1 = struct {
 
             for ([_][32]u8{ split.r1, split.r2 }, es[2 * i ..][0..2]) |r, *e| {
                 const x = mem.readInt(u256, &r, .little);
-                if (x <= scalar.field_order / 2) {
-                    e.* = slide(r);
-                } else {
-                    var r_neg: [32]u8 = undefined;
-                    mem.writeInt(u256, &r_neg, scalar.field_order - x, .little);
-                    e.* = slide(r_neg);
+                const negate = x > scalar.field_order / 2;
+                var r_abs: [32]u8 = undefined;
+                mem.writeInt(u256, &r_abs, if (negate) scalar.field_order - x else x, .little);
+                e.* = slide(r_abs);
+                if (negate) {
                     for (e) |*d| d.* = -d.*;
                 }
             }
         }
 
-        var pos: usize = 2 * 32;
-        top: while (pos > 0) : (pos -= 1) {
-            for (&es) |*e| {
-                if (e[pos] != 0) break :top;
-            }
-        }
+        var pos: usize = 0;
+        for (&es) |*e| pos = @max(pos, mem.findLastNone(i8, e, &.{0}) orelse 0);
         var q = Secp256k1.identityElement;
         while (true) : (pos -= 1) {
             for (&pcs, &es) |*pc, *e| {
