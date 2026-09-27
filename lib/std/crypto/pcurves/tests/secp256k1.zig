@@ -4,6 +4,8 @@ const testing = std.testing;
 
 const Secp256k1 = @import("../secp256k1.zig").Secp256k1;
 
+const lambda: u256 = 0x5363ad4cc05c30e0a5261c028812645a122e22ea20816678df02967c1b23bd72;
+
 test "secp256k1 ECDH key exchange" {
     const io = testing.io;
     const dha = Secp256k1.scalar.random(io, .little);
@@ -136,6 +138,43 @@ test "secp256k1 double base multiplication" {
     const pr1 = try Secp256k1.mulDoubleBasePublic(p1, s1, p2, s2, .little);
     const pr2 = (try p1.mul(s1, .little)).add(try p2.mul(s2, .little));
     try testing.expect(pr1.equivalent(pr2));
+}
+
+test "secp256k1 public multiplication" {
+    const io = testing.io;
+    const n = Secp256k1.scalar.field_order;
+    const p = Secp256k1.random(io);
+    for ([_]u256{ 1, 2, n - 1, lambda, n - lambda, (1 << 128) - 1 }) |x| {
+        var s: [32]u8 = undefined;
+        std.mem.writeInt(u256, &s, x, .big);
+        for ([_]Secp256k1{ p, Secp256k1.basePoint }) |q| {
+            try testing.expect((try q.mulPublic(s, .big)).equivalent(try q.mul(s, .big)));
+        }
+    }
+
+    var s_n: [32]u8 = undefined;
+    std.mem.writeInt(u256, &s_n, n, .little);
+    try testing.expectError(error.NonCanonical, p.mulPublic(s_n, .little));
+}
+
+test "secp256k1 scalar split" {
+    const io = testing.io;
+    const Scalar = Secp256k1.scalar.Scalar;
+    const n = Secp256k1.scalar.field_order;
+    var lambda_s: [32]u8 = undefined;
+    std.mem.writeInt(u256, &lambda_s, lambda, .little);
+    const lambda_scalar = try Scalar.fromBytes(lambda_s, .little);
+    inline for (.{ .little, .big }) |endian| {
+        const k = Secp256k1.scalar.random(io, endian);
+        const split = try Secp256k1.Endormorphism.splitScalar(k, endian);
+        const r1 = try Scalar.fromBytes(split.r1, endian);
+        const r2 = try Scalar.fromBytes(split.r2, endian);
+        try testing.expect(r1.add(r2.mul(lambda_scalar)).equivalent(try Scalar.fromBytes(k, endian)));
+        for ([_][32]u8{ split.r1, split.r2 }) |r_s| {
+            const r = std.mem.readInt(u256, &r_s, endian);
+            try testing.expect(@min(r, n - r) < 1 << 128);
+        }
+    }
 }
 
 test "secp256k1 scalar inverse" {
