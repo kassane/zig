@@ -159,17 +159,13 @@ test "secp256k1 public multiplication" {
 
 test "secp256k1 scalar split" {
     const io = testing.io;
-    const Scalar = Secp256k1.scalar.Scalar;
     const n = Secp256k1.scalar.field_order;
-    var lambda_s: [32]u8 = undefined;
-    std.mem.writeInt(u256, &lambda_s, lambda, .little);
-    const lambda_scalar = try Scalar.fromBytes(lambda_s, .little);
     inline for (.{ .little, .big }) |endian| {
+        var lambda_s: [32]u8 = undefined;
+        std.mem.writeInt(u256, &lambda_s, lambda, endian);
         const k = Secp256k1.scalar.random(io, endian);
         const split = try Secp256k1.Endormorphism.splitScalar(k, endian);
-        const r1 = try Scalar.fromBytes(split.r1, endian);
-        const r2 = try Scalar.fromBytes(split.r2, endian);
-        try testing.expect(r1.add(r2.mul(lambda_scalar)).equivalent(try Scalar.fromBytes(k, endian)));
+        try testing.expectEqual(k, try Secp256k1.scalar.mulAdd(split.r2, lambda_s, split.r1, endian));
         for ([_][32]u8{ split.r1, split.r2 }) |r_s| {
             const r = std.mem.readInt(u256, &r_s, endian);
             try testing.expect(@min(r, n - r) < 1 << 128);
