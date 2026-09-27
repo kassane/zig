@@ -5916,13 +5916,14 @@ pub fn flush(
     prog_node: std.Progress.Node,
 ) link.Error!void {
     _ = arena;
+    _ = tid;
     const sub_prog_node = prog_node.start("COFF Flush", 0);
     defer sub_prog_node.end();
 
     const comp = coff.base.comp;
 
     while (try coff.resolve()) {}
-    while (try coff.idle(tid)) {}
+    while (try coff.idle()) {}
 
     // This has to occur after all other flushMoved / flushResized have resolved,
     // but it will also generate one more set of resizes and moves.
@@ -5942,7 +5943,7 @@ pub fn flush(
             ),
         };
     }
-    while (try coff.idle(tid)) {}
+    while (try coff.idle()) {}
 
     if (coff.isImage())
         try coff.reportUndefs();
@@ -5957,7 +5958,7 @@ pub fn flush(
     };
 
     if (coff.options.enable_link_snapshots)
-        coff.dumpStderr(tid) catch |err|
+        coff.dumpStderr() catch |err|
             return comp.link_diags.fail("dumping link snapshot failed: {t}", .{err});
 }
 
@@ -6069,8 +6070,7 @@ fn resolve(coff: *Coff) !bool {
     return false;
 }
 
-pub fn idle(coff: *Coff, tid: Zcu.PerThread.Id) !bool {
-    _ = tid;
+pub fn idle(coff: *Coff) !bool {
     // Idle tasks should not modify create / modify nodes, otherwise the output is not reproducible.
     coff.mf.nodes_lock.lock();
     defer coff.mf.nodes_lock.unlock();
@@ -7457,7 +7457,7 @@ fn updateExportInner(
 
     try coff.genPending(pt);
     while (try coff.resolve()) {}
-    while (try coff.idle(pt.tid)) {}
+    while (try coff.idle()) {}
 
     const machine = coff.targetLoad(&coff.headerPtr().machine);
     const exported_ni = exported_si.node(coff);
@@ -7595,21 +7595,21 @@ fn updateExportInner(
     }
 }
 
-fn dumpStderr(coff: *Coff, tid: Zcu.PerThread.Id) Io.File.Writer.Error!void {
+fn dumpStderr(coff: *Coff) Io.File.Writer.Error!void {
     const comp = coff.base.comp;
     const io = comp.io;
     var buffer: [512]u8 = undefined;
     const stderr = try io.lockStderr(&buffer, null);
     defer io.unlockStderr();
     const w = &stderr.file_writer.interface;
-    _ = coff.dump(w, tid) catch |err| switch (err) {
+    _ = coff.dump(w) catch |err| switch (err) {
         error.WriteFailed => return stderr.file_writer.err.?,
     };
 }
 
-pub fn dump(coff: *Coff, w: *Io.Writer, tid: Zcu.PerThread.Id) Io.Writer.Error!link.File.DumpResult {
+pub fn dump(coff: *Coff, w: *Io.Writer) Io.Writer.Error!link.File.DumpResult {
     if (coff.options.enable_link_snapshots) {
-        try coff.printNode(tid, w, .root, 0);
+        try coff.printNode(w, .root, 0);
         try w.writeAll("Section table:\n");
         for (coff.section_table.keys(), coff.section_table.values()) |name, sec|
             try coff.printSection(w, name, sec.si);
@@ -7762,9 +7762,8 @@ fn printNodeName(
     }
 }
 
-pub fn printNode(
+fn printNode(
     coff: *Coff,
-    tid: Zcu.PerThread.Id,
     w: *Io.Writer,
     ni: MappedFile.Node.Index,
     indent: usize,
@@ -7792,7 +7791,7 @@ pub fn printNode(
         // non-leaf, just print children
         var child_ni = first_ni;
         while (true) {
-            try coff.printNode(tid, w, child_ni, indent + 1);
+            try coff.printNode(w, child_ni, indent + 1);
             child_ni = child_ni.next(&coff.mf).unwrap() orelse break;
         }
         return;

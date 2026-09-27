@@ -9726,8 +9726,9 @@ pub fn updateNav(elf: *Elf, pt: Zcu.PerThread, nav_index: InternPool.Nav.Index) 
     };
 }
 fn updateNavInner(elf: *Elf, pt: Zcu.PerThread, nav_index: InternPool.Nav.Index) Error!void {
-    const zcu = pt.zcu;
-    const gpa = zcu.gpa;
+    const comp = elf.base.comp;
+    const gpa = comp.gpa;
+    const zcu = comp.zcu.?;
     const ip = &zcu.intern_pool;
 
     const nav = ip.getNav(nav_index);
@@ -9823,7 +9824,7 @@ pub fn updateContainerType(
         ),
     };
 }
-pub fn updateContainerTypeInner(
+fn updateContainerTypeInner(
     elf: *Elf,
     pt: Zcu.PerThread,
     ty: InternPool.Index,
@@ -10227,7 +10228,8 @@ pub fn flush(
     tid: Zcu.PerThread.Id,
     prog_node: std.Progress.Node,
 ) link.Error!void {
-    elf.flushInner(arena, tid, prog_node) catch |err| switch (err) {
+    _ = tid;
+    elf.flushInner(arena, prog_node) catch |err| switch (err) {
         else => |e| return e,
         error.MappedFileIo => return elf.base.comp.link_diags.fail(
             "failed to write output file: {t}",
@@ -10238,7 +10240,6 @@ pub fn flush(
 fn flushInner(
     elf: *Elf,
     arena: std.mem.Allocator,
-    tid: Zcu.PerThread.Id,
     prog_node: std.Progress.Node,
 ) Error!void {
     const comp = elf.base.comp;
@@ -10266,7 +10267,7 @@ fn flushInner(
 
     try elf.prepareDynamic();
 
-    while (try elf.idle(tid)) {}
+    while (try elf.idle()) {}
 
     assert(elf.input_pending_index == elf.inputs.items.len);
     assert(elf.input_section_pending_index == elf.input_sections.items.len);
@@ -10323,13 +10324,11 @@ fn flushInner(
     try elf.mf.flush();
 
     if (elf.options.enable_link_snapshots)
-        elf.dumpStderr(tid) catch |err|
+        elf.dumpStderr() catch |err|
             return diags.fail("dumping link snapshot failed: {t}", .{err});
 }
 
-pub fn idle(elf: *Elf, tid: Zcu.PerThread.Id) link.Error!bool {
-    _ = tid;
-
+pub fn idle(elf: *Elf) link.Error!bool {
     // This function is called non-deterministically, and so must not affect the layout of any nodes.
     elf.mf.nodes_lock.lock();
     defer elf.mf.nodes_lock.unlock();
@@ -12126,19 +12125,15 @@ pub fn updateExports(
     export_indices: []const Zcu.Export.Index,
 ) link.Error!void {
     for (export_indices) |export_index| {
-        elf.updateExportInner(pt, export_index) catch |err| switch (err) {
+        elf.updateExportInner(export_index) catch |err| switch (err) {
             else => |e| return e,
             error.MappedFileIo => return elf.base.comp.link_diags.fail("failed to write output file: {t}", .{elf.mf.io_err.?}),
         };
     }
     try elf.genPending(pt);
 }
-fn updateExportInner(
-    elf: *Elf,
-    pt: Zcu.PerThread,
-    export_index: Zcu.Export.Index,
-) Error!void {
-    const zcu = pt.zcu;
+fn updateExportInner(elf: *Elf, export_index: Zcu.Export.Index) Error!void {
+    const zcu = elf.base.comp.zcu.?;
     const ip = &zcu.intern_pool;
 
     const @"export" = export_index.ptr(zcu);
@@ -12213,21 +12208,21 @@ fn updateExportInner(
     };
 }
 
-fn dumpStderr(elf: *Elf, tid: Zcu.PerThread.Id) Io.File.Writer.Error!void {
+fn dumpStderr(elf: *Elf) Io.File.Writer.Error!void {
     const comp = elf.base.comp;
     const io = comp.io;
     var buffer: [512]u8 = undefined;
     const stderr = try io.lockStderr(&buffer, null);
     defer io.unlockStderr();
     const w = &stderr.file_writer.interface;
-    _ = elf.dump(w, tid) catch |err| switch (err) {
+    _ = elf.dump(w) catch |err| switch (err) {
         error.WriteFailed => return stderr.file_writer.err.?,
     };
 }
 
-pub fn dump(elf: *Elf, w: *Io.Writer, tid: Zcu.PerThread.Id) Io.Writer.Error!link.File.DumpResult {
+pub fn dump(elf: *Elf, w: *Io.Writer) Io.Writer.Error!link.File.DumpResult {
     if (elf.options.enable_link_snapshots) {
-        try elf.printNode(tid, w, .root, 0);
+        try elf.printNode(w, .root, 0);
         return .enabled;
     }
     return .disabled;
@@ -12235,7 +12230,6 @@ pub fn dump(elf: *Elf, w: *Io.Writer, tid: Zcu.PerThread.Id) Io.Writer.Error!lin
 
 pub fn printNode(
     elf: *Elf,
-    tid: Zcu.PerThread.Id,
     w: *Io.Writer,
     ni: MappedFile.Node.Index,
     indent: usize,
@@ -12366,7 +12360,7 @@ pub fn printNode(
         // non-leaf, just print children
         var child_ni = first_ni;
         while (true) {
-            try elf.printNode(tid, w, child_ni, indent + 1);
+            try elf.printNode(w, child_ni, indent + 1);
             child_ni = child_ni.next(&elf.mf).unwrap() orelse break;
         }
         return;
