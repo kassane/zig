@@ -164,7 +164,7 @@ test "secp256k1 scalar split" {
         var lambda_s: [32]u8 = undefined;
         std.mem.writeInt(u256, &lambda_s, lambda, endian);
         const k = Secp256k1.scalar.random(io, endian);
-        const split = try Secp256k1.Endormorphism.splitScalar(k, endian);
+        const split = try Secp256k1.Endomorphism.splitScalar(k, endian);
         try testing.expectEqual(k, try Secp256k1.scalar.mulAdd(split.r2, lambda_s, split.r1, endian));
         for ([_][32]u8{ split.r1, split.r2 }) |r_s| {
             const r = std.mem.readInt(u256, &r_s, endian);

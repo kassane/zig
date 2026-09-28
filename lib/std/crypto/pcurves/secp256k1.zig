@@ -35,7 +35,7 @@ pub const Secp256k1 = struct {
 
     pub const B = Fe.fromInt(7) catch unreachable;
 
-    pub const Endormorphism = struct {
+    pub const Endomorphism = struct {
         const lambda = scalarFromInt(37718080363155996902926221483475020450927657555482586988616620542887997980018);
         const beta = Fe.fromInt(55594575648329892869085402983802832744385952214688224221778511981742606582254) catch unreachable;
         const b1_neg = scalarFromInt(303414439467246543595250775667605759171);
@@ -359,11 +359,11 @@ pub const Secp256k1 = struct {
             pcs[2 * i] = if (point.is_base) basePointPc[0..9].* else precompute(point, 8);
             // lambda*P
             for (&pcs[2 * i + 1], pcs[2 * i]) |*pc_lambda, pc| {
-                pc_lambda.* = .{ .x = pc.x.mul(Endormorphism.beta), .y = pc.y, .z = pc.z };
+                pc_lambda.* = .{ .x = pc.x.mul(Endomorphism.beta), .y = pc.y, .z = pc.z };
             }
             var s48: [48]u8 = undefined;
             mem.writeInt(u384, &s48, mem.readInt(u256, &k, endian), .little);
-            const split = Endormorphism.splitScalar(scalar.reduce48(s48, .little), .little) catch unreachable;
+            const split = Endomorphism.splitScalar(scalar.reduce48(s48, .little), .little) catch unreachable;
 
             for ([_][32]u8{ split.r1, split.r2 }, es[2 * i ..][0..2]) |r, *e| {
                 const x = mem.readInt(u256, &r, .little);
