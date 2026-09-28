@@ -823,6 +823,44 @@ fn AegisMac(comptime T: type) type {
 const htest = @import("test.zig");
 const testing = std.testing;
 
+fn hashStateOutputs(comptime State: type, key: anytype, nonce: anytype) [32]u8 {
+    var msg: [State.rate]u8 = undefined;
+    for (&msg, 0..) |*x, i| x.* = @truncate(i *% 31 +% 5);
+    var out: [State.rate]u8 = undefined;
+    var h: crypto.hash.sha2.Sha256 = .init(.{});
+
+    var st = State.init(key, nonce);
+    st.absorb(&msg);
+    st.enc(&out, &msg);
+    h.update(&out);
+    st.dec(&out, &msg);
+    h.update(&out);
+    st.decLast(out[3..], msg[3..]);
+    h.update(out[3..]);
+    inline for (.{ 128, 256 }) |tag_bits| {
+        var st2 = st;
+        h.update(&st2.finalize(tag_bits, 33, 12345));
+        st2 = st;
+        h.update(&st2.finalizeMac(tag_bits, 54321));
+    }
+    return h.finalResult();
+}
+
+test "Aegis bitsliced states" {
+    const key = "0123456789abcdef0123456789ABCDEF";
+    const nonce = "nonce0123456789Nnonce0123456789N";
+    inline for (.{ 1, 2, 4 }) |degree| {
+        try testing.expectEqual(
+            hashStateOutputs(State128X(degree), key[0..16].*, nonce[0..16].*),
+            hashStateOutputs(bitsliced.State128X(degree), key[0..16].*, nonce[0..16].*),
+        );
+        try testing.expectEqual(
+            hashStateOutputs(State256X(degree), key.*, nonce.*),
+            hashStateOutputs(bitsliced.State256X(degree), key.*, nonce.*),
+        );
+    }
+}
+
 test "Aegis128L test vector 1" {
     const key: [Aegis128L.key_length]u8 = [_]u8{ 0x10, 0x01 } ++ @as([14]u8, @splat(0x00));
     const nonce: [Aegis128L.nonce_length]u8 = [_]u8{ 0x10, 0x00, 0x02 } ++ @as([13]u8, @splat(0x00));
