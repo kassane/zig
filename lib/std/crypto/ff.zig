@@ -252,7 +252,7 @@ pub fn Uint(comptime max_bits: comptime_int) type {
             const n = acc.limbs_len;
             var wide: [2 * max_limbs_count]Limb = undefined;
             @memcpy(wide[0..n], acc.limbsConst());
-            addMulVV(wide[0 .. 2 * n], x.limbsConst(), y.limbsConst());
+            mulAddWide(wide[0 .. 2 * n], x.limbsConst(), y.limbsConst());
             @memcpy(acc.limbs(), wide[0..n]);
             return @intFromBool(!ct.eql(orLimbs(wide[n..][0..n]), 0));
         }
@@ -545,7 +545,7 @@ fn orLimbs(limbs: []const Limb) Limb {
 }
 
 // Adds `x * y` to `z` and returns the carry.
-fn addMulVVW(z: []Limb, x: []const Limb, y: Limb) Limb {
+fn mulAddLimb(z: []Limb, x: []const Limb, y: Limb) Limb {
     assert(z.len == x.len);
     var carry: Limb = 0;
     for (z, x) |*z_limb, x_limb| {
@@ -561,10 +561,10 @@ fn addMulVVW(z: []Limb, x: []const Limb, y: Limb) Limb {
 }
 
 // Adds `x * y` to the low `x.len` limbs of `z`. The upper limbs need no initialization.
-fn addMulVV(z: []Limb, x: []const Limb, y: []const Limb) void {
+fn mulAddWide(z: []Limb, x: []const Limb, y: []const Limb) void {
     assert(z.len == x.len + y.len);
     for (y, 0..) |y_limb, i| {
-        z[i + x.len] = addMulVVW(z[i..][0..x.len], x, y_limb);
+        z[i + x.len] = mulAddLimb(z[i..][0..x.len], x, y_limb);
     }
 }
 
