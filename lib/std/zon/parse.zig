@@ -27,8 +27,6 @@ const valid_types = {};
 pub const Diagnostics = struct {
     errors: []const Error,
 
-    pub const empty: Diagnostics = .{ .errors = &.{} };
-
     /// Log the failure with `std.log.err`.
     pub fn log(self: *const Diagnostics, path: []const u8) void {
         std.log.err("{f}", .{self.fmt(path)});
@@ -39,7 +37,7 @@ pub const Diagnostics = struct {
         var arena_allocator: ArenaAllocator = .init(gpa);
         defer arena_allocator.deinit();
         const arena = arena_allocator.allocator();
-        var diagnostics: Diagnostics = .empty;
+        var diagnostics: Diagnostics = undefined;
 
         const MyType = struct {
             foo: u32,
@@ -71,7 +69,7 @@ pub const Diagnostics = struct {
         var arena_allocator: ArenaAllocator = .init(gpa);
         defer arena_allocator.deinit();
         const arena = arena_allocator.allocator();
-        var diagnostics: Diagnostics = .empty;
+        var diagnostics: Diagnostics = undefined;
 
         const MyType = struct {
             foo: u32,
@@ -198,8 +196,8 @@ pub const Options = struct {
     arena: Allocator,
     /// The ZON source to parse.
     source: [:0]const u8,
-    /// When an error is returned from the parser, a human readable error description of the failure
-    /// is stored here.
+    /// Initialized by the callee with a human readable description of any parse errors that
+    /// occured.
     diagnostics: *Diagnostics,
     /// If true, unknown fields do not error.
     ignore_unknown_fields: bool = false,
@@ -232,7 +230,7 @@ test fromSlice {
         \\}
     ;
 
-    var diagnostics: Diagnostics = .empty;
+    var diagnostics: Diagnostics = undefined;
     const options = fromSlice(TextureOptions, .{
         .gpa = gpa,
         .arena = arena,
@@ -307,7 +305,7 @@ test updateFromSlice {
         .theme = "default",
     };
 
-    var diagnostics: Diagnostics = .empty;
+    var diagnostics: Diagnostics = undefined;
     updateFromSlice(MyTextEditorConfig, &config, .{
         .gpa = gpa,
         .arena = arena,
@@ -359,7 +357,7 @@ fn fromSliceInner(
     options: Options,
 ) error{ OutOfMemory, ParseZon }!void {
     var errors: std.ArrayList(Diagnostics.Error) = .empty;
-    defer options.diagnostics.errors = errors.items;
+    defer options.diagnostics.* = .{ .errors = errors.items };
 
     var ast = try std.zig.Ast.parse(options.gpa, options.source, .{ .mode = .zon });
     defer ast.deinit(options.gpa);
@@ -386,8 +384,8 @@ pub const FromZoirOptions = struct {
     zoir: *const Zoir,
     /// The node to start parsing at.
     node: Zoir.Node.Index = .root,
-    /// When an error is returned from the parser, a human readable error description of the failure
-    /// is stored here.
+    /// Initialized by the callee with a human readable description of any parse errors that
+    /// occured.
     diagnostics: *Diagnostics,
     /// If true, unknown fields do not error.
     ignore_unknown_fields: bool = false,
@@ -432,7 +430,7 @@ fn fromZoirInner(
     options: FromZoirOptions,
 ) error{ OutOfMemory, ParseZon }!void {
     var errors: std.ArrayList(Diagnostics.Error) = .empty;
-    defer options.diagnostics.errors = errors.items;
+    defer options.diagnostics.* = .{ .errors = errors.items };
     return inner(T, value, initialized, .{
         .arena = options.arena,
         .ast = options.ast,
@@ -1384,7 +1382,7 @@ test "std.zon ast errors" {
     var arena_allocator: ArenaAllocator = .init(gpa);
     defer arena_allocator.deinit();
     const arena = arena_allocator.allocator();
-    var diagnostics: Diagnostics = .empty;
+    var diagnostics: Diagnostics = undefined;
     try std.testing.expectError(
         error.ParseZon,
         fromSliceNoAlloc(struct {}, .{
@@ -1405,7 +1403,7 @@ test "std.zon comments" {
     var arena_allocator: ArenaAllocator = .init(gpa);
     defer arena_allocator.deinit();
     const arena = arena_allocator.allocator();
-    var diagnostics: Diagnostics = .empty;
+    var diagnostics: Diagnostics = undefined;
 
     try std.testing.expectEqual(@as(u8, 10), fromSliceNoAlloc(u8, .{
         .gpa = gpa,
@@ -1441,7 +1439,7 @@ test "std.zon failure/oom formatting" {
     var arena_allocator: ArenaAllocator = .init(gpa);
     defer arena_allocator.deinit();
     const arena = arena_allocator.allocator();
-    var diagnostics: Diagnostics = .empty;
+    var diagnostics: Diagnostics = undefined;
 
     try std.testing.expectError(error.OutOfMemory, fromSlice([]const u8, .{
         .gpa = .failing,
@@ -1459,7 +1457,7 @@ test "std.zon fromSlice syntax error" {
     var arena_allocator: ArenaAllocator = .init(gpa);
     defer arena_allocator.deinit();
     const arena = arena_allocator.allocator();
-    var diagnostics: Diagnostics = .empty;
+    var diagnostics: Diagnostics = undefined;
     try std.testing.expectError(
         error.ParseZon,
         fromSliceNoAlloc(u8, .{
@@ -1480,7 +1478,7 @@ test "std.zon optional" {
     var arena_allocator: ArenaAllocator = .init(gpa);
     defer arena_allocator.deinit();
     const arena = arena_allocator.allocator();
-    var diagnostics: Diagnostics = .empty;
+    var diagnostics: Diagnostics = undefined;
 
     // Basic usage
     {
@@ -1524,7 +1522,7 @@ test "std.zon unions" {
     var arena_allocator: ArenaAllocator = .init(gpa);
     defer arena_allocator.deinit();
     const arena = arena_allocator.allocator();
-    var diagnostics: Diagnostics = .empty;
+    var diagnostics: Diagnostics = undefined;
 
     // Unions
     {
@@ -1722,7 +1720,7 @@ test "std.zon structs" {
     var arena_allocator: ArenaAllocator = .init(gpa);
     defer arena_allocator.deinit();
     const arena = arena_allocator.allocator();
-    var diagnostics: Diagnostics = .empty;
+    var diagnostics: Diagnostics = undefined;
 
     // Structs (various sizes tested since they're parsed differently)
     {
@@ -2019,7 +2017,7 @@ test "std.zon tuples" {
     var arena_allocator: ArenaAllocator = .init(gpa);
     defer arena_allocator.deinit();
     const arena = arena_allocator.allocator();
-    var diagnostics: Diagnostics = .empty;
+    var diagnostics: Diagnostics = undefined;
 
     // Structs (various sizes tested since they're parsed differently)
     {
@@ -2180,7 +2178,7 @@ test "std.zon arrays and slices" {
     var arena_allocator: ArenaAllocator = .init(gpa);
     defer arena_allocator.deinit();
     const arena = arena_allocator.allocator();
-    var diagnostics: Diagnostics = .empty;
+    var diagnostics: Diagnostics = undefined;
 
     // Literals
     {
@@ -2500,7 +2498,7 @@ test "std.zon string literal" {
     var arena_allocator: ArenaAllocator = .init(gpa);
     defer arena_allocator.deinit();
     const arena = arena_allocator.allocator();
-    var diagnostics: Diagnostics = .empty;
+    var diagnostics: Diagnostics = undefined;
 
     // Basic string literal
     {
@@ -2792,7 +2790,7 @@ test "std.zon enum literals" {
     var arena_allocator: ArenaAllocator = .init(gpa);
     defer arena_allocator.deinit();
     const arena = arena_allocator.allocator();
-    var diagnostics: Diagnostics = .empty;
+    var diagnostics: Diagnostics = undefined;
 
     const Enum = enum {
         foo,
@@ -2906,7 +2904,7 @@ test "std.zon parse bool" {
     var arena_allocator: ArenaAllocator = .init(gpa);
     defer arena_allocator.deinit();
     const arena = arena_allocator.allocator();
-    var diagnostics: Diagnostics = .empty;
+    var diagnostics: Diagnostics = undefined;
 
     // Correct bools
     try std.testing.expectEqual(true, try fromSliceNoAlloc(bool, .{
@@ -2981,7 +2979,7 @@ test "std.zon parse int" {
     var arena_allocator: ArenaAllocator = .init(gpa);
     defer arena_allocator.deinit();
     const arena = arena_allocator.allocator();
-    var diagnostics: Diagnostics = .empty;
+    var diagnostics: Diagnostics = undefined;
 
     // Test various numbers and types
     try std.testing.expectEqual(@as(u8, 10), try fromSliceNoAlloc(u8, .{
@@ -3429,7 +3427,7 @@ test "std.zon negative char" {
     var arena_allocator: ArenaAllocator = .init(gpa);
     defer arena_allocator.deinit();
     const arena = arena_allocator.allocator();
-    var diagnostics: Diagnostics = .empty;
+    var diagnostics: Diagnostics = undefined;
 
     {
         try std.testing.expectError(error.ParseZon, fromSliceNoAlloc(f32, .{
@@ -3464,7 +3462,7 @@ test "std.zon parse float" {
     var arena_allocator: ArenaAllocator = .init(gpa);
     defer arena_allocator.deinit();
     const arena = arena_allocator.allocator();
-    var diagnostics: Diagnostics = .empty;
+    var diagnostics: Diagnostics = undefined;
 
     // Test decimals
     try std.testing.expectEqual(@as(f16, 0.5), try fromSliceNoAlloc(f16, .{
@@ -3752,7 +3750,7 @@ test "std.zon free on error" {
     var arena_allocator: ArenaAllocator = .init(gpa);
     defer arena_allocator.deinit();
     const arena = arena_allocator.allocator();
-    var diagnostics: Diagnostics = .empty;
+    var diagnostics: Diagnostics = undefined;
 
     // Test freeing partially allocated structs
     {
@@ -3873,7 +3871,7 @@ test "std.zon vector" {
     var arena_allocator: ArenaAllocator = .init(gpa);
     defer arena_allocator.deinit();
     const arena = arena_allocator.allocator();
-    var diagnostics: Diagnostics = .empty;
+    var diagnostics: Diagnostics = undefined;
 
     // Passing cases
     try std.testing.expectEqual(
@@ -4062,7 +4060,7 @@ test "std.zon add pointers" {
     var arena_allocator: ArenaAllocator = .init(gpa);
     defer arena_allocator.deinit();
     const arena = arena_allocator.allocator();
-    var diagnostics: Diagnostics = .empty;
+    var diagnostics: Diagnostics = undefined;
 
     // Primitive with varying levels of pointers
     {
@@ -4448,7 +4446,7 @@ test "std.zon stop on node" {
     var arena_allocator: ArenaAllocator = .init(gpa);
     defer arena_allocator.deinit();
     const arena = arena_allocator.allocator();
-    var diagnostics: Diagnostics = .empty;
+    var diagnostics: Diagnostics = undefined;
 
     {
         const Vec2 = struct {
@@ -4495,7 +4493,7 @@ test "std.zon no alloc" {
     var arena_allocator: ArenaAllocator = .init(gpa);
     defer arena_allocator.deinit();
     const arena = arena_allocator.allocator();
-    var diagnostics: Diagnostics = .empty;
+    var diagnostics: Diagnostics = undefined;
 
     try std.testing.expectEqual(
         [3]u8{ 1, 2, 3 },
@@ -4531,7 +4529,7 @@ test "std.zon aligned pointers" {
     var arena_allocator: ArenaAllocator = .init(gpa);
     defer arena_allocator.deinit();
     const arena = arena_allocator.allocator();
-    var diagnostics: Diagnostics = .empty;
+    var diagnostics: Diagnostics = undefined;
 
     const n: u8 align(8) = 10;
     const Foo = struct {
@@ -4555,7 +4553,7 @@ test "std.zon update basic" {
     var arena_allocator: ArenaAllocator = .init(gpa);
     defer arena_allocator.deinit();
     const arena = arena_allocator.allocator();
-    var diagnostics: Diagnostics = .empty;
+    var diagnostics: Diagnostics = undefined;
 
     const Vector = struct { x: f32, y: f32, z: f32 };
     const MyStruct = struct {
@@ -4668,7 +4666,7 @@ test "std.zon update optionals" {
     var arena_allocator: ArenaAllocator = .init(gpa);
     defer arena_allocator.deinit();
     const arena = arena_allocator.allocator();
-    var diagnostics: Diagnostics = .empty;
+    var diagnostics: Diagnostics = undefined;
 
     const MyStruct = struct {
         foo: ?struct { bar: u32 = 1, baz: u32 = 2, qux: u32 },
@@ -4726,7 +4724,7 @@ test "std.zon update optional pointers" {
     var arena_allocator: ArenaAllocator = .init(gpa);
     defer arena_allocator.deinit();
     const arena = arena_allocator.allocator();
-    var diagnostics: Diagnostics = .empty;
+    var diagnostics: Diagnostics = undefined;
 
     const MyStruct = struct {
         foo: ?*const struct { bar: u32 = 1, baz: u32 = 2, qux: u32 },
@@ -4752,7 +4750,7 @@ test "std.zon update pointers" {
     var arena_allocator: ArenaAllocator = .init(gpa);
     defer arena_allocator.deinit();
     const arena = arena_allocator.allocator();
-    var diagnostics: Diagnostics = .empty;
+    var diagnostics: Diagnostics = undefined;
 
     // Updating a pointer should leave fields we don't specify unchanged
     {
@@ -4795,7 +4793,7 @@ test "std.zon update unions" {
     var arena_allocator: ArenaAllocator = .init(gpa);
     defer arena_allocator.deinit();
     const arena = arena_allocator.allocator();
-    var diagnostics: Diagnostics = .empty;
+    var diagnostics: Diagnostics = undefined;
 
     const MyUnion = union(enum) {
         none: void,
@@ -4857,7 +4855,7 @@ test "std.zon variants" {
     var arena_allocator: ArenaAllocator = .init(gpa);
     defer arena_allocator.deinit();
     const arena = arena_allocator.allocator();
-    var diagnostics: Diagnostics = .empty;
+    var diagnostics: Diagnostics = undefined;
 
     const Struct = struct { a: u32, b: u32 };
     const start: Struct = .{ .a = 10, .b = 20 };
