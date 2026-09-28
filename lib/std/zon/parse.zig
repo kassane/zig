@@ -23,30 +23,78 @@ const ArenaAllocator = std.heap.ArenaAllocator;
 /// Rename when adding or removing support for a type.
 const valid_types = {};
 
-/// An error encountered while parsing ZON.
-pub const Error = struct {
-    msg: []const u8,
-    loc: Ast.Location,
-    token: Ast.OptionalTokenIndex,
-    /// If `token == .none`, this is an `Ast.Node.Index`.
-    /// Otherwise, this is a byte offset into `token`.
-    node_or_offset: u32,
-    notes: []Note,
+/// Errors encountered while parsing ZON. See `log` and `fatal` for reporting errors to the user.
+pub const Diagnostics = struct {
+    errors: []const Error,
 
-    const Options = struct {
-        msg: []const u8,
-        token: Ast.OptionalTokenIndex,
-        node_or_offset: u32,
-        notes: []Note,
-    };
+    pub const empty: Diagnostics = .{ .errors = &.{} };
 
-    fn init(ast: *const Ast, options: Error.Options) Error {
+    /// Log the failure with `std.log.err`.
+    pub fn log(self: *const Diagnostics, path: []const u8) void {
+        std.log.err("{f}", .{self.fmt(path)});
+    }
+
+    test log {
+        const gpa = std.testing.allocator;
+        var arena_allocator: ArenaAllocator = .init(gpa);
+        defer arena_allocator.deinit();
+        const arena = arena_allocator.allocator();
+        var diagnostics: Diagnostics = .empty;
+
+        const MyType = struct {
+            foo: u32,
+            bar: u32,
+        };
+
+        const parsed: MyType = fromSliceNoAlloc(MyType, .{
+            .gpa = gpa,
+            .arena = arena,
+            .source = ".{ .foo = 1, .bar = 2 }",
+            .diagnostics = &diagnostics,
+        }) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            error.ParseZon => b: {
+                diagnostics.log("input.zon");
+                break :b .{ .foo = 0, .bar = 0 };
+            },
+        };
+        _ = parsed;
+    }
+
+    /// Log the failure with `std.log.err`, and then terminate the process with exit code 1.
+    pub fn fatal(self: *const Diagnostics, path: []const u8) noreturn {
+        std.process.fatal("{f}", .{self.fmt(path)});
+    }
+
+    test fatal {
+        const gpa = std.testing.allocator;
+        var arena_allocator: ArenaAllocator = .init(gpa);
+        defer arena_allocator.deinit();
+        const arena = arena_allocator.allocator();
+        var diagnostics: Diagnostics = .empty;
+
+        const MyType = struct {
+            foo: u32,
+            bar: u32,
+        };
+
+        const parsed = fromSliceNoAlloc(MyType, .{
+            .gpa = gpa,
+            .arena = arena,
+            .source = ".{ .foo = 1, .bar = 2 }",
+            .diagnostics = &diagnostics,
+        }) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            error.ParseZon => diagnostics.fatal("input.zon"),
+        };
+        _ = parsed;
+    }
+
+    /// Formats a human readable description of any errors.
+    pub fn fmt(self: *const Diagnostics, path: []const u8) Formatter {
         return .{
-            .msg = options.msg,
-            .loc = astLoc(ast, options.token, options.node_or_offset),
-            .token = options.token,
-            .node_or_offset = options.node_or_offset,
-            .notes = options.notes,
+            .errors = self.errors,
+            .path = path,
         };
     }
 
@@ -65,6 +113,58 @@ pub const Error = struct {
             return ast.tokenLocation(0, token);
         }
     }
+
+    pub const Formatter = struct {
+        path: []const u8,
+        errors: []const Error,
+
+        pub fn format(self: *const @This(), w: *std.Io.Writer) std.Io.Writer.Error!void {
+            for (self.errors) |e| {
+                try w.print("{s}:", .{self.path});
+                try w.print("{d}:{d}: error: {s}\n", .{
+                    e.loc.line + 1,
+                    e.loc.column + 1,
+                    e.msg,
+                });
+
+                for (e.notes) |note| {
+                    try w.print("{s}:", .{self.path});
+                    try w.print("{d}:{d}: note: {s}\n", .{
+                        note.loc.line + 1,
+                        note.loc.column + 1,
+                        note.msg,
+                    });
+                }
+            }
+        }
+    };
+
+    pub const Error = struct {
+        msg: []const u8,
+        loc: Ast.Location,
+        token: Ast.OptionalTokenIndex,
+        /// If `token == .none`, this is an `Ast.Node.Index`.
+        /// Otherwise, this is a byte offset into `token`.
+        node_or_offset: u32,
+        notes: []Note,
+
+        const Options = struct {
+            msg: []const u8,
+            token: Ast.OptionalTokenIndex,
+            node_or_offset: u32,
+            notes: []Note,
+        };
+
+        fn init(ast: *const Ast, options: Error.Options) Error {
+            return .{
+                .msg = options.msg,
+                .loc = astLoc(ast, options.token, options.node_or_offset),
+                .token = options.token,
+                .node_or_offset = options.node_or_offset,
+                .notes = options.notes,
+            };
+        }
+    };
 
     pub const Note = struct {
         msg: []const u8,
@@ -91,121 +191,21 @@ pub const Error = struct {
     };
 };
 
-/// Errors encountered while parsing ZON. See `log` and `fatal` for reporting errors to the user.
-pub const Errors = struct {
-    items: []const Error,
-
-    pub const empty: Errors = .{ .items = &.{} };
-
-    /// Log the failure with `std.log.err`.
-    pub fn log(self: *const Errors, path: []const u8) void {
-        std.log.err("{f}", .{self.fmt(path)});
-    }
-
-    test log {
-        const gpa = std.testing.allocator;
-        var arena_allocator: ArenaAllocator = .init(gpa);
-        defer arena_allocator.deinit();
-        const arena = arena_allocator.allocator();
-        var errors: Errors = .empty;
-
-        const MyType = struct {
-            foo: u32,
-            bar: u32,
-        };
-
-        const parsed: MyType = fromSliceNoAlloc(MyType, .{
-            .gpa = gpa,
-            .arena = arena,
-            .source = ".{ .foo = 1, .bar = 2 }",
-            .errors = &errors,
-        }) catch |err| switch (err) {
-            error.OutOfMemory => return error.OutOfMemory,
-            error.ParseZon => b: {
-                errors.log("input.zon");
-                break :b .{ .foo = 0, .bar = 0 };
-            },
-        };
-        _ = parsed;
-    }
-
-    /// Log the failure with `std.log.err`, and then terminate the process with exit code 1.
-    pub fn fatal(self: *const Errors, path: []const u8) noreturn {
-        std.process.fatal("{f}", .{self.fmt(path)});
-    }
-
-    test fatal {
-        const gpa = std.testing.allocator;
-        var arena_allocator: ArenaAllocator = .init(gpa);
-        defer arena_allocator.deinit();
-        const arena = arena_allocator.allocator();
-        var errors: Errors = .empty;
-
-        const MyType = struct {
-            foo: u32,
-            bar: u32,
-        };
-
-        const parsed = fromSliceNoAlloc(MyType, .{
-            .gpa = gpa,
-            .arena = arena,
-            .source = ".{ .foo = 1, .bar = 2 }",
-            .errors = &errors,
-        }) catch |err| switch (err) {
-            error.OutOfMemory => return error.OutOfMemory,
-            error.ParseZon => errors.fatal("input.zon"),
-        };
-        _ = parsed;
-    }
-
-    pub fn fmt(self: *const Errors, path: []const u8) Formatter {
-        return .{
-            .items = self.items,
-            .path = path,
-        };
-    }
-
-    pub const Formatter = struct {
-        path: []const u8,
-        items: []const Error,
-
-        pub fn format(self: *const @This(), w: *std.Io.Writer) std.Io.Writer.Error!void {
-            for (self.items) |e| {
-                try w.print("{s}:", .{self.path});
-                try w.print("{d}:{d}: error: {s}\n", .{
-                    e.loc.line + 1,
-                    e.loc.column + 1,
-                    e.msg,
-                });
-
-                for (e.notes) |note| {
-                    try w.print("{s}:", .{self.path});
-                    try w.print("{d}:{d}: note: {s}\n", .{
-                        note.loc.line + 1,
-                        note.loc.column + 1,
-                        note.msg,
-                    });
-                }
-            }
-        }
-    };
-};
-
 pub const Options = struct {
     /// Used for scratch allocations.
     gpa: Allocator,
-    /// Used for allocating errors and results.
+    /// Used for allocating diagnostics and results.
     arena: Allocator,
     /// The ZON source to parse.
     source: [:0]const u8,
     /// When an error is returned from the parser, a human readable error description of the failure
     /// is stored here.
-    errors: *Errors,
+    diagnostics: *Diagnostics,
     /// If true, unknown fields do not error.
     ignore_unknown_fields: bool = false,
 };
 
-/// Parses the given slice as ZON, writing any errors to `options.errors`.
+/// Parses the given slice as ZON, writing any errors to `options.diagnostics`.
 pub fn fromSlice(T: type, options: Options) error{ OutOfMemory, ParseZon }!T {
     var value: T = undefined;
     try fromSliceInner(T, &value, false, options);
@@ -232,16 +232,16 @@ test fromSlice {
         \\}
     ;
 
-    var errors: Errors = .empty;
+    var diagnostics: Diagnostics = .empty;
     const options = fromSlice(TextureOptions, .{
         .gpa = gpa,
         .arena = arena,
         .source = source,
-        .errors = &errors,
+        .diagnostics = &diagnostics,
     }) catch |err| switch (err) {
         error.OutOfMemory => return err,
         error.ParseZon => {
-            errors.log("texture_options.zon");
+            diagnostics.log("texture_options.zon");
             return err;
         },
     };
@@ -307,16 +307,16 @@ test updateFromSlice {
         .theme = "default",
     };
 
-    var errors: Errors = .empty;
+    var diagnostics: Diagnostics = .empty;
     updateFromSlice(MyTextEditorConfig, &config, .{
         .gpa = gpa,
         .arena = arena,
         .source = global_config,
-        .errors = &errors,
+        .diagnostics = &diagnostics,
     }) catch |err| switch (err) {
         error.OutOfMemory => return err,
         error.ParseZon => {
-            errors.log("global_config.zon");
+            diagnostics.log("global_config.zon");
             return err;
         },
     };
@@ -324,11 +324,11 @@ test updateFromSlice {
         .gpa = gpa,
         .arena = arena,
         .source = project_config,
-        .errors = &errors,
+        .diagnostics = &diagnostics,
     }) catch |err| switch (err) {
         error.OutOfMemory => return err,
         error.ParseZon => {
-            errors.log("project_config.zon");
+            diagnostics.log("project_config.zon");
             return err;
         },
     };
@@ -358,8 +358,8 @@ fn fromSliceInner(
     initialized: bool,
     options: Options,
 ) error{ OutOfMemory, ParseZon }!void {
-    var errors: std.ArrayList(Error) = .empty;
-    defer options.errors.items = errors.items;
+    var errors: std.ArrayList(Diagnostics.Error) = .empty;
+    defer options.diagnostics.errors = errors.items;
 
     var ast = try std.zig.Ast.parse(options.gpa, options.source, .{ .mode = .zon });
     defer ast.deinit(options.gpa);
@@ -378,7 +378,7 @@ fn fromSliceInner(
 }
 
 pub const FromZoirOptions = struct {
-    /// Used for allocating errors and results.
+    /// Used for allocating diagnostics and results.
     arena: Allocator,
     /// The AST for this ZON value.
     ast: *const Ast,
@@ -388,7 +388,7 @@ pub const FromZoirOptions = struct {
     node: Zoir.Node.Index = .root,
     /// When an error is returned from the parser, a human readable error description of the failure
     /// is stored here.
-    errors: *Errors,
+    diagnostics: *Diagnostics,
     /// If true, unknown fields do not error.
     ignore_unknown_fields: bool = false,
 };
@@ -431,8 +431,8 @@ fn fromZoirInner(
     initialized: bool,
     options: FromZoirOptions,
 ) error{ OutOfMemory, ParseZon }!void {
-    var errors: std.ArrayList(Error) = .empty;
-    defer options.errors.items = errors.items;
+    var errors: std.ArrayList(Diagnostics.Error) = .empty;
+    defer options.diagnostics.errors = errors.items;
     return inner(T, value, initialized, .{
         .arena = options.arena,
         .ast = options.ast,
@@ -447,7 +447,7 @@ const InnerOptions = struct {
     ast: *const Ast,
     zoir: *const Zoir,
     node: Zoir.Node.Index = .root,
-    errors: *std.ArrayList(Error),
+    errors: *std.ArrayList(Diagnostics.Error),
     ignore_unknown_fields: bool,
 };
 
@@ -461,7 +461,7 @@ fn inner(
 
     if (options.zoir.hasCompileErrors()) {
         for (options.zoir.compile_errors) |e| {
-            var notes: std.ArrayList(Error.Note) = .empty;
+            var notes: std.ArrayList(Diagnostics.Note) = .empty;
             for (e.getNotes(options.zoir)) |note| {
                 try notes.append(options.arena, .init(options.ast, .{
                     .msg = try options.arena.dupe(u8, note.msg.get(options.zoir)),
@@ -515,7 +515,7 @@ const Parser = struct {
     arena: Allocator,
     ast: *const Ast,
     zoir: *const Zoir,
-    errors: *std.ArrayList(Error),
+    errors: *std.ArrayList(Diagnostics.Error),
     ignore_unknown_fields: bool,
 
     const ParseExprError = error{ ParseZon, OutOfMemory };
@@ -1086,7 +1086,7 @@ const Parser = struct {
         offset: u32,
         comptime fmt: []const u8,
         args: anytype,
-        notes: []Error.Note,
+        notes: []Diagnostics.Note,
     ) error{ OutOfMemory, ParseZon } {
         @branchHint(.cold);
         comptime assert(args.len > 0);
@@ -1112,7 +1112,7 @@ const Parser = struct {
 
     fn failToken(
         self: Parser,
-        failure: Error,
+        failure: Diagnostics.Error,
     ) error{ OutOfMemory, ParseZon } {
         @branchHint(.cold);
         try self.errors.append(self.arena, failure);
@@ -1160,7 +1160,7 @@ const Parser = struct {
         } else self.ast.nodeMainToken(node.getAstNode(self.zoir));
         switch (@typeInfo(T)) {
             inline .@"struct", .@"union", .@"enum" => |info| {
-                var notes: std.ArrayList(Error.Note) = .empty;
+                var notes: std.ArrayList(Diagnostics.Note) = .empty;
                 if (info.field_names.len == 0) {
                     try notes.append(self.arena, .init(self.ast, .{
                         .token = .fromToken(token),
@@ -1384,20 +1384,20 @@ test "std.zon ast errors" {
     var arena_allocator: ArenaAllocator = .init(gpa);
     defer arena_allocator.deinit();
     const arena = arena_allocator.allocator();
-    var errors: Errors = .empty;
+    var diagnostics: Diagnostics = .empty;
     try std.testing.expectError(
         error.ParseZon,
         fromSliceNoAlloc(struct {}, .{
             .gpa = gpa,
             .arena = arena,
             .source = ".{.x = 1 .y = 2}",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         }),
     );
     try std.testing.expectFmt(
         \\input.zon:1:13: error: expected ',' after initializer
         \\
-    , "{f}", .{errors.fmt("input.zon")});
+    , "{f}", .{diagnostics.fmt("input.zon")});
 }
 
 test "std.zon comments" {
@@ -1405,7 +1405,7 @@ test "std.zon comments" {
     var arena_allocator: ArenaAllocator = .init(gpa);
     defer arena_allocator.deinit();
     const arena = arena_allocator.allocator();
-    var errors: Errors = .empty;
+    var diagnostics: Diagnostics = .empty;
 
     try std.testing.expectEqual(@as(u8, 10), fromSliceNoAlloc(u8, .{
         .gpa = gpa,
@@ -1415,7 +1415,7 @@ test "std.zon comments" {
         \\10 // comment
         \\// comment
         ,
-        .errors = &errors,
+        .diagnostics = &diagnostics,
     }));
 
     {
@@ -1427,12 +1427,12 @@ test "std.zon comments" {
             \\10 // comment
             \\// comment
             ,
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         }));
         try std.testing.expectFmt(
             \\input.zon:1:1: error: expected expression, found 'a document comment'
             \\
-        , "{f}", .{errors.fmt("input.zon")});
+        , "{f}", .{diagnostics.fmt("input.zon")});
     }
 }
 
@@ -1441,17 +1441,17 @@ test "std.zon failure/oom formatting" {
     var arena_allocator: ArenaAllocator = .init(gpa);
     defer arena_allocator.deinit();
     const arena = arena_allocator.allocator();
-    var errors: Errors = .empty;
+    var diagnostics: Diagnostics = .empty;
 
     try std.testing.expectError(error.OutOfMemory, fromSlice([]const u8, .{
         .gpa = .failing,
         .arena = arena,
         .source = "\"foo\"",
-        .errors = &errors,
+        .diagnostics = &diagnostics,
     }));
     try std.testing.expectFmt(
         \\
-    , "{f}", .{errors.fmt("input.zon")});
+    , "{f}", .{diagnostics.fmt("input.zon")});
 }
 
 test "std.zon fromSlice syntax error" {
@@ -1459,20 +1459,20 @@ test "std.zon fromSlice syntax error" {
     var arena_allocator: ArenaAllocator = .init(gpa);
     defer arena_allocator.deinit();
     const arena = arena_allocator.allocator();
-    var errors: Errors = .empty;
+    var diagnostics: Diagnostics = .empty;
     try std.testing.expectError(
         error.ParseZon,
         fromSliceNoAlloc(u8, .{
             .gpa = gpa,
             .arena = arena,
             .source = ".{",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         }),
     );
     try std.testing.expectFmt(
         \\input.zon:1:3: error: expected expression, found 'EOF'
         \\
-    , "{f}", .{errors.fmt("input.zon")});
+    , "{f}", .{diagnostics.fmt("input.zon")});
 }
 
 test "std.zon optional" {
@@ -1480,7 +1480,7 @@ test "std.zon optional" {
     var arena_allocator: ArenaAllocator = .init(gpa);
     defer arena_allocator.deinit();
     const arena = arena_allocator.allocator();
-    var errors: Errors = .empty;
+    var diagnostics: Diagnostics = .empty;
 
     // Basic usage
     {
@@ -1488,14 +1488,14 @@ test "std.zon optional" {
             .gpa = gpa,
             .arena = arena,
             .source = "null",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         });
         try std.testing.expect(none == null);
         const some = try fromSliceNoAlloc(?u32, .{
             .gpa = gpa,
             .arena = arena,
             .source = "1",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         });
         try std.testing.expect(some.? == 1);
     }
@@ -1506,14 +1506,14 @@ test "std.zon optional" {
             .gpa = gpa,
             .arena = arena,
             .source = "null",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         });
         try std.testing.expect(none == null);
         const some = try fromSlice(?[]const u8, .{
             .gpa = gpa,
             .arena = arena,
             .source = "\"foo\"",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         });
         try std.testing.expectEqualStrings("foo", some.?);
     }
@@ -1524,7 +1524,7 @@ test "std.zon unions" {
     var arena_allocator: ArenaAllocator = .init(gpa);
     defer arena_allocator.deinit();
     const arena = arena_allocator.allocator();
-    var errors: Errors = .empty;
+    var diagnostics: Diagnostics = .empty;
 
     // Unions
     {
@@ -1535,28 +1535,28 @@ test "std.zon unions" {
             .gpa = gpa,
             .arena = arena,
             .source = ".{.x = 1.5}",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         });
         try std.testing.expectEqual(Tagged{ .x = 1.5 }, tagged_x);
         const tagged_y = try fromSliceNoAlloc(Tagged, .{
             .gpa = gpa,
             .arena = arena,
             .source = ".{.@\"y y\" = true}",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         });
         try std.testing.expectEqual(Tagged{ .@"y y" = true }, tagged_y);
         const tagged_z_shorthand = try fromSliceNoAlloc(Tagged, .{
             .gpa = gpa,
             .arena = arena,
             .source = ".z",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         });
         try std.testing.expectEqual(@as(Tagged, .z), tagged_z_shorthand);
         const tagged_zz_shorthand = try fromSliceNoAlloc(Tagged, .{
             .gpa = gpa,
             .arena = arena,
             .source = ".@\"z z\"",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         });
         try std.testing.expectEqual(@as(Tagged, .@"z z"), tagged_zz_shorthand);
 
@@ -1564,14 +1564,14 @@ test "std.zon unions" {
             .gpa = gpa,
             .arena = arena,
             .source = ".{.x = 1.5}",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         });
         try std.testing.expect(untagged_x.x == 1.5);
         const untagged_y = try fromSliceNoAlloc(Untagged, .{
             .gpa = gpa,
             .arena = arena,
             .source = ".{.@\"y y\" = true}",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         });
         try std.testing.expect(untagged_y.@"y y");
     }
@@ -1584,7 +1584,7 @@ test "std.zon unions" {
             .gpa = gpa,
             .arena = arena,
             .source = ".{.baz = false}",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         });
         try std.testing.expectEqual(Union{ .baz = false }, noalloc);
 
@@ -1592,7 +1592,7 @@ test "std.zon unions" {
             .gpa = gpa,
             .arena = arena,
             .source = ".{.bar = \"qux\"}",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         });
         try std.testing.expectEqualDeep(Union{ .bar = "qux" }, alloc);
     }
@@ -1606,14 +1606,14 @@ test "std.zon unions" {
                 .gpa = gpa,
                 .arena = arena,
                 .source = ".{.z=2.5}",
-                .errors = &errors,
+                .diagnostics = &diagnostics,
             }),
         );
         try std.testing.expectFmt(
             \\input.zon:1:4: error: unexpected field 'z'
             \\input.zon:1:4: note: supported: 'x', 'y'
             \\
-        , "{f}", .{errors.fmt("input.zon")});
+        , "{f}", .{diagnostics.fmt("input.zon")});
     }
 
     // Explicit void field
@@ -1625,13 +1625,13 @@ test "std.zon unions" {
                 .gpa = gpa,
                 .arena = arena,
                 .source = ".{.x=1}",
-                .errors = &errors,
+                .diagnostics = &diagnostics,
             }),
         );
         try std.testing.expectFmt(
             \\input.zon:1:6: error: expected type 'void'
             \\
-        , "{f}", .{errors.fmt("input.zon")});
+        , "{f}", .{diagnostics.fmt("input.zon")});
     }
 
     // Extra field
@@ -1643,13 +1643,13 @@ test "std.zon unions" {
                 .gpa = gpa,
                 .arena = arena,
                 .source = ".{.x = 1.5, .y = true}",
-                .errors = &errors,
+                .diagnostics = &diagnostics,
             }),
         );
         try std.testing.expectFmt(
             \\input.zon:1:2: error: expected union
             \\
-        , "{f}", .{errors.fmt("input.zon")});
+        , "{f}", .{diagnostics.fmt("input.zon")});
     }
 
     // No fields
@@ -1661,13 +1661,13 @@ test "std.zon unions" {
                 .gpa = gpa,
                 .arena = arena,
                 .source = ".{}",
-                .errors = &errors,
+                .diagnostics = &diagnostics,
             }),
         );
         try std.testing.expectFmt(
             \\input.zon:1:2: error: expected union
             \\
-        , "{f}", .{errors.fmt("input.zon")});
+        , "{f}", .{diagnostics.fmt("input.zon")});
     }
 
     // Enum literals cannot coerce into untagged unions
@@ -1677,12 +1677,12 @@ test "std.zon unions" {
             .gpa = gpa,
             .arena = arena,
             .source = ".x",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         }));
         try std.testing.expectFmt(
             \\input.zon:1:2: error: expected union
             \\
-        , "{f}", .{errors.fmt("input.zon")});
+        , "{f}", .{diagnostics.fmt("input.zon")});
     }
 
     // Unknown field for enum literal coercion
@@ -1692,13 +1692,13 @@ test "std.zon unions" {
             .gpa = gpa,
             .arena = arena,
             .source = ".y",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         }));
         try std.testing.expectFmt(
             \\input.zon:1:2: error: unexpected field 'y'
             \\input.zon:1:2: note: supported: 'x'
             \\
-        , "{f}", .{errors.fmt("input.zon")});
+        , "{f}", .{diagnostics.fmt("input.zon")});
     }
 
     // Non void field for enum literal coercion
@@ -1708,12 +1708,12 @@ test "std.zon unions" {
             .gpa = gpa,
             .arena = arena,
             .source = ".x",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         }));
         try std.testing.expectFmt(
             \\input.zon:1:2: error: expected union
             \\
-        , "{f}", .{errors.fmt("input.zon")});
+        , "{f}", .{diagnostics.fmt("input.zon")});
     }
 }
 
@@ -1722,7 +1722,7 @@ test "std.zon structs" {
     var arena_allocator: ArenaAllocator = .init(gpa);
     defer arena_allocator.deinit();
     const arena = arena_allocator.allocator();
-    var errors: Errors = .empty;
+    var diagnostics: Diagnostics = .empty;
 
     // Structs (various sizes tested since they're parsed differently)
     {
@@ -1735,7 +1735,7 @@ test "std.zon structs" {
             .gpa = gpa,
             .arena = arena,
             .source = ".{}",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         });
         try std.testing.expectEqual(Vec0{}, zero);
 
@@ -1743,7 +1743,7 @@ test "std.zon structs" {
             .gpa = gpa,
             .arena = arena,
             .source = ".{.x = 1.2}",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         });
         try std.testing.expectEqual(Vec1{ .x = 1.2 }, one);
 
@@ -1751,7 +1751,7 @@ test "std.zon structs" {
             .gpa = gpa,
             .arena = arena,
             .source = ".{.x = 1.2, .y = 3.4}",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         });
         try std.testing.expectEqual(Vec2{ .x = 1.2, .y = 3.4 }, two);
 
@@ -1759,7 +1759,7 @@ test "std.zon structs" {
             .gpa = gpa,
             .arena = arena,
             .source = ".{.x = 1.2, .y = 3.4, .z = 5.6}",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         });
         try std.testing.expectEqual(Vec3{ .x = 1.2, .y = 3.4, .z = 5.6 }, three);
     }
@@ -1772,7 +1772,7 @@ test "std.zon structs" {
             .gpa = gpa,
             .arena = arena,
             .source = ".{.bar = \"qux\", .baz = .{\"a\", \"b\"}}",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         });
         try std.testing.expectEqualDeep(Foo{ .bar = "qux", .baz = &.{ "a", "b" } }, parsed);
     }
@@ -1786,14 +1786,14 @@ test "std.zon structs" {
                 .gpa = gpa,
                 .arena = arena,
                 .source = ".{.x=1.5, .z=2.5}",
-                .errors = &errors,
+                .diagnostics = &diagnostics,
             }),
         );
         try std.testing.expectFmt(
             \\input.zon:1:12: error: unexpected field 'z'
             \\input.zon:1:12: note: supported: 'x', 'y'
             \\
-        , "{f}", .{errors.fmt("input.zon")});
+        , "{f}", .{diagnostics.fmt("input.zon")});
     }
 
     // Duplicate field
@@ -1805,14 +1805,14 @@ test "std.zon structs" {
                 .gpa = gpa,
                 .arena = arena,
                 .source = ".{.x=1.5, .x=2.5, .x=3.5}",
-                .errors = &errors,
+                .diagnostics = &diagnostics,
             }),
         );
         try std.testing.expectFmt(
             \\input.zon:1:4: error: duplicate struct field name
             \\input.zon:1:12: note: duplicate name here
             \\
-        , "{f}", .{errors.fmt("input.zon")});
+        , "{f}", .{diagnostics.fmt("input.zon")});
     }
 
     // Ignore unknown fields
@@ -1823,7 +1823,7 @@ test "std.zon structs" {
             .arena = arena,
             .source = ".{ .x = 1.0, .z = 3.0 }",
             .ignore_unknown_fields = true,
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         });
         try std.testing.expectEqual(Vec2{ .x = 1.0, .y = 2.0 }, parsed);
     }
@@ -1837,14 +1837,14 @@ test "std.zon structs" {
                 .gpa = gpa,
                 .arena = arena,
                 .source = ".{.x=1.5, .z=2.5}",
-                .errors = &errors,
+                .diagnostics = &diagnostics,
             }),
         );
         try std.testing.expectFmt(
             \\input.zon:1:4: error: unexpected field 'x'
             \\input.zon:1:4: note: none expected
             \\
-        , "{f}", .{errors.fmt("input.zon")});
+        , "{f}", .{diagnostics.fmt("input.zon")});
     }
 
     // Missing field
@@ -1856,13 +1856,13 @@ test "std.zon structs" {
                 .gpa = gpa,
                 .arena = arena,
                 .source = ".{.x=1.5}",
-                .errors = &errors,
+                .diagnostics = &diagnostics,
             }),
         );
         try std.testing.expectFmt(
             \\input.zon:1:2: error: missing required field y
             \\
-        , "{f}", .{errors.fmt("input.zon")});
+        , "{f}", .{diagnostics.fmt("input.zon")});
     }
 
     // Default field
@@ -1872,7 +1872,7 @@ test "std.zon structs" {
             .gpa = gpa,
             .arena = arena,
             .source = ".{.x = 1.2}",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         });
         try std.testing.expectEqual(Vec2{ .x = 1.2, .y = 1.5 }, parsed);
     }
@@ -1884,7 +1884,7 @@ test "std.zon structs" {
             .gpa = gpa,
             .arena = arena,
             .source = ".{.x = 1.2}",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         });
         try std.testing.expectEqual(Vec2{ .x = 1.2, .y = 1.5 }, parsed);
     }
@@ -1896,13 +1896,13 @@ test "std.zon structs" {
             .gpa = gpa,
             .arena = arena,
             .source = ".{.x = 1.2, .y = 1.5}",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         });
         try std.testing.expectError(error.ParseZon, parsed);
         try std.testing.expectFmt(
             \\input.zon:1:18: error: cannot initialize comptime field
             \\
-        , "{f}", .{errors.fmt("input.zon")});
+        , "{f}", .{diagnostics.fmt("input.zon")});
     }
 
     // Enum field (regression test, we were previously getting the field name in an
@@ -1913,7 +1913,7 @@ test "std.zon structs" {
             .gpa = gpa,
             .arena = arena,
             .source = ".{ .x = .x }",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         });
         try std.testing.expectEqual(Vec0{ .x = .x }, parsed);
     }
@@ -1925,7 +1925,7 @@ test "std.zon structs" {
             .gpa = gpa,
             .arena = arena,
             .source = ".{ .@\"x x\" = .@\"x x\" }",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         });
         try std.testing.expectEqual(Vec0{ .@"x x" = .@"x x" }, parsed);
     }
@@ -1938,14 +1938,14 @@ test "std.zon structs" {
                 .gpa = gpa,
                 .arena = arena,
                 .source = "Empty{}",
-                .errors = &errors,
+                .diagnostics = &diagnostics,
             });
             try std.testing.expectError(error.ParseZon, parsed);
             try std.testing.expectFmt(
                 \\input.zon:1:1: error: types are not available in ZON
                 \\input.zon:1:1: note: replace the type with '.'
                 \\
-            , "{f}", .{errors.fmt("input.zon")});
+            , "{f}", .{diagnostics.fmt("input.zon")});
         }
 
         // Arrays
@@ -1954,14 +1954,14 @@ test "std.zon structs" {
                 .gpa = gpa,
                 .arena = arena,
                 .source = "[3]u8{1, 2, 3}",
-                .errors = &errors,
+                .diagnostics = &diagnostics,
             });
             try std.testing.expectError(error.ParseZon, parsed);
             try std.testing.expectFmt(
                 \\input.zon:1:1: error: types are not available in ZON
                 \\input.zon:1:1: note: replace the type with '.'
                 \\
-            , "{f}", .{errors.fmt("input.zon")});
+            , "{f}", .{diagnostics.fmt("input.zon")});
         }
 
         // Slices
@@ -1970,14 +1970,14 @@ test "std.zon structs" {
                 .gpa = gpa,
                 .arena = arena,
                 .source = "[]u8{1, 2, 3}",
-                .errors = &errors,
+                .diagnostics = &diagnostics,
             });
             try std.testing.expectError(error.ParseZon, parsed);
             try std.testing.expectFmt(
                 \\input.zon:1:1: error: types are not available in ZON
                 \\input.zon:1:1: note: replace the type with '.'
                 \\
-            , "{f}", .{errors.fmt("input.zon")});
+            , "{f}", .{diagnostics.fmt("input.zon")});
         }
 
         // Tuples
@@ -1986,14 +1986,14 @@ test "std.zon structs" {
                 .gpa = gpa,
                 .arena = arena,
                 .source = "Tuple{1, 2, 3}",
-                .errors = &errors,
+                .diagnostics = &diagnostics,
             });
             try std.testing.expectError(error.ParseZon, parsed);
             try std.testing.expectFmt(
                 \\input.zon:1:1: error: types are not available in ZON
                 \\input.zon:1:1: note: replace the type with '.'
                 \\
-            , "{f}", .{errors.fmt("input.zon")});
+            , "{f}", .{diagnostics.fmt("input.zon")});
         }
 
         // Nested
@@ -2002,14 +2002,14 @@ test "std.zon structs" {
                 .gpa = gpa,
                 .arena = arena,
                 .source = ".{ .x = Tuple{1, 2, 3} }",
-                .errors = &errors,
+                .diagnostics = &diagnostics,
             });
             try std.testing.expectError(error.ParseZon, parsed);
             try std.testing.expectFmt(
                 \\input.zon:1:9: error: types are not available in ZON
                 \\input.zon:1:9: note: replace the type with '.'
                 \\
-            , "{f}", .{errors.fmt("input.zon")});
+            , "{f}", .{diagnostics.fmt("input.zon")});
         }
     }
 }
@@ -2019,7 +2019,7 @@ test "std.zon tuples" {
     var arena_allocator: ArenaAllocator = .init(gpa);
     defer arena_allocator.deinit();
     const arena = arena_allocator.allocator();
-    var errors: Errors = .empty;
+    var diagnostics: Diagnostics = .empty;
 
     // Structs (various sizes tested since they're parsed differently)
     {
@@ -2032,7 +2032,7 @@ test "std.zon tuples" {
             .gpa = gpa,
             .arena = arena,
             .source = ".{}",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         });
         try std.testing.expectEqual(Tuple0{}, zero);
 
@@ -2040,7 +2040,7 @@ test "std.zon tuples" {
             .gpa = gpa,
             .arena = arena,
             .source = ".{1.2}",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         });
         try std.testing.expectEqual(Tuple1{1.2}, one);
 
@@ -2048,7 +2048,7 @@ test "std.zon tuples" {
             .gpa = gpa,
             .arena = arena,
             .source = ".{1.2, true}",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         });
         try std.testing.expectEqual(Tuple2{ 1.2, true }, two);
 
@@ -2056,7 +2056,7 @@ test "std.zon tuples" {
             .gpa = gpa,
             .arena = arena,
             .source = ".{1.2, false, 3}",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         });
         try std.testing.expectEqual(Tuple3{ 1.2, false, 3 }, three);
     }
@@ -2068,7 +2068,7 @@ test "std.zon tuples" {
             .gpa = gpa,
             .arena = arena,
             .source = ".{\"hello\", \"world\"}",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         });
         try std.testing.expectEqualDeep(Tuple{ "hello", "world" }, parsed);
     }
@@ -2082,13 +2082,13 @@ test "std.zon tuples" {
                 .gpa = gpa,
                 .arena = arena,
                 .source = ".{0.5, true, 123}",
-                .errors = &errors,
+                .diagnostics = &diagnostics,
             }),
         );
         try std.testing.expectFmt(
             \\input.zon:1:14: error: index 2 outside of tuple length 2
             \\
-        , "{f}", .{errors.fmt("input.zon")});
+        , "{f}", .{diagnostics.fmt("input.zon")});
     }
 
     // Extra field
@@ -2100,13 +2100,13 @@ test "std.zon tuples" {
                 .gpa = gpa,
                 .arena = arena,
                 .source = ".{0.5}",
-                .errors = &errors,
+                .diagnostics = &diagnostics,
             }),
         );
         try std.testing.expectFmt(
             \\input.zon:1:2: error: missing tuple field with index 1
             \\
-        , "{f}", .{errors.fmt("input.zon")});
+        , "{f}", .{diagnostics.fmt("input.zon")});
     }
 
     // Tuple with unexpected field names
@@ -2118,13 +2118,13 @@ test "std.zon tuples" {
                 .gpa = gpa,
                 .arena = arena,
                 .source = ".{.foo = 10.0}",
-                .errors = &errors,
+                .diagnostics = &diagnostics,
             }),
         );
         try std.testing.expectFmt(
             \\input.zon:1:2: error: expected tuple
             \\
-        , "{f}", .{errors.fmt("input.zon")});
+        , "{f}", .{diagnostics.fmt("input.zon")});
     }
 
     // Struct with missing field names
@@ -2136,13 +2136,13 @@ test "std.zon tuples" {
                 .gpa = gpa,
                 .arena = arena,
                 .source = ".{10.0}",
-                .errors = &errors,
+                .diagnostics = &diagnostics,
             }),
         );
         try std.testing.expectFmt(
             \\input.zon:1:2: error: expected struct
             \\
-        , "{f}", .{errors.fmt("input.zon")});
+        , "{f}", .{diagnostics.fmt("input.zon")});
     }
 
     // Comptime field
@@ -2152,7 +2152,7 @@ test "std.zon tuples" {
             .gpa = gpa,
             .arena = arena,
             .source = ".{ 1.2 }",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         });
         try std.testing.expectEqual(Vec2{ 1.2, 1.5 }, parsed);
     }
@@ -2164,13 +2164,13 @@ test "std.zon tuples" {
             .gpa = gpa,
             .arena = arena,
             .source = ".{ 1.2, 1.5}",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         });
         try std.testing.expectError(error.ParseZon, parsed);
         try std.testing.expectFmt(
             \\input.zon:1:9: error: cannot initialize comptime field
             \\
-        , "{f}", .{errors.fmt("input.zon")});
+        , "{f}", .{diagnostics.fmt("input.zon")});
     }
 }
 
@@ -2180,7 +2180,7 @@ test "std.zon arrays and slices" {
     var arena_allocator: ArenaAllocator = .init(gpa);
     defer arena_allocator.deinit();
     const arena = arena_allocator.allocator();
-    var errors: Errors = .empty;
+    var diagnostics: Diagnostics = .empty;
 
     // Literals
     {
@@ -2190,7 +2190,7 @@ test "std.zon arrays and slices" {
                 .gpa = gpa,
                 .arena = arena,
                 .source = ".{}",
-                .errors = &errors,
+                .diagnostics = &diagnostics,
             });
             try std.testing.expectEqualSlices(u8, &@as([0]u8, .{}), &zero);
 
@@ -2198,7 +2198,7 @@ test "std.zon arrays and slices" {
                 .gpa = gpa,
                 .arena = arena,
                 .source = ".{'a'}",
-                .errors = &errors,
+                .diagnostics = &diagnostics,
             });
             try std.testing.expectEqualSlices(u8, &@as([1]u8, .{'a'}), &one);
 
@@ -2206,7 +2206,7 @@ test "std.zon arrays and slices" {
                 .gpa = gpa,
                 .arena = arena,
                 .source = ".{'a', 'b'}",
-                .errors = &errors,
+                .diagnostics = &diagnostics,
             });
             try std.testing.expectEqualSlices(u8, &@as([2]u8, .{ 'a', 'b' }), &two);
 
@@ -2214,7 +2214,7 @@ test "std.zon arrays and slices" {
                 .gpa = gpa,
                 .arena = arena,
                 .source = ".{'a', 'b',}",
-                .errors = &errors,
+                .diagnostics = &diagnostics,
             });
             try std.testing.expectEqualSlices(u8, &@as([2]u8, .{ 'a', 'b' }), &two_comma);
 
@@ -2222,7 +2222,7 @@ test "std.zon arrays and slices" {
                 .gpa = gpa,
                 .arena = arena,
                 .source = ".{'a', 'b', 'c'}",
-                .errors = &errors,
+                .diagnostics = &diagnostics,
             });
             try std.testing.expectEqualSlices(u8, &.{ 'a', 'b', 'c' }, &three);
 
@@ -2230,7 +2230,7 @@ test "std.zon arrays and slices" {
                 .gpa = gpa,
                 .arena = arena,
                 .source = ".{'a', 'b', 'c'}",
-                .errors = &errors,
+                .diagnostics = &diagnostics,
             });
             const expected_sentinel: [3:'z']u8 = .{ 'a', 'b', 'c' };
             try std.testing.expectEqualSlices(u8, &expected_sentinel, &sentinel);
@@ -2242,7 +2242,7 @@ test "std.zon arrays and slices" {
                 .gpa = gpa,
                 .arena = arena,
                 .source = ".{}",
-                .errors = &errors,
+                .diagnostics = &diagnostics,
             });
             try std.testing.expectEqualSlices(u8, @as([]const u8, &.{}), zero);
 
@@ -2250,7 +2250,7 @@ test "std.zon arrays and slices" {
                 .gpa = gpa,
                 .arena = arena,
                 .source = ".{'a'}",
-                .errors = &errors,
+                .diagnostics = &diagnostics,
             });
             try std.testing.expectEqualSlices(u8, &.{'a'}, one);
 
@@ -2258,7 +2258,7 @@ test "std.zon arrays and slices" {
                 .gpa = gpa,
                 .arena = arena,
                 .source = ".{'a', 'b'}",
-                .errors = &errors,
+                .diagnostics = &diagnostics,
             });
             try std.testing.expectEqualSlices(u8, &.{ 'a', 'b' }, two);
 
@@ -2266,7 +2266,7 @@ test "std.zon arrays and slices" {
                 .gpa = gpa,
                 .arena = arena,
                 .source = ".{'a', 'b',}",
-                .errors = &errors,
+                .diagnostics = &diagnostics,
             });
             try std.testing.expectEqualSlices(u8, &.{ 'a', 'b' }, two_comma);
 
@@ -2274,7 +2274,7 @@ test "std.zon arrays and slices" {
                 .gpa = gpa,
                 .arena = arena,
                 .source = ".{'a', 'b', 'c'}",
-                .errors = &errors,
+                .diagnostics = &diagnostics,
             });
             try std.testing.expectEqualSlices(u8, &.{ 'a', 'b', 'c' }, three);
 
@@ -2282,7 +2282,7 @@ test "std.zon arrays and slices" {
                 .gpa = gpa,
                 .arena = arena,
                 .source = ".{'a', 'b', 'c'}",
-                .errors = &errors,
+                .diagnostics = &diagnostics,
             });
             const expected_sentinel: [:'z']const u8 = &.{ 'a', 'b', 'c' };
             try std.testing.expectEqualSlices(u8, expected_sentinel, sentinel);
@@ -2297,7 +2297,7 @@ test "std.zon arrays and slices" {
                 .gpa = gpa,
                 .arena = arena,
                 .source = ".{\"abc\"}",
-                .errors = &errors,
+                .diagnostics = &diagnostics,
             });
             const expected: [1][]const u8 = .{"abc"};
             try std.testing.expectEqualDeep(expected, parsed);
@@ -2309,7 +2309,7 @@ test "std.zon arrays and slices" {
                 .gpa = gpa,
                 .arena = arena,
                 .source = ".{\"abc\"}",
-                .errors = &errors,
+                .diagnostics = &diagnostics,
             });
             const expected: []const []const u8 = &.{"abc"};
             try std.testing.expectEqualDeep(expected, parsed);
@@ -2324,7 +2324,7 @@ test "std.zon arrays and slices" {
                 .gpa = gpa,
                 .arena = arena,
                 .source = ".{1}",
-                .errors = &errors,
+                .diagnostics = &diagnostics,
             });
             try std.testing.expectEqual(@as(usize, 1), sentinel.len);
             try std.testing.expectEqual(@as(u8, 1), sentinel[0]);
@@ -2337,7 +2337,7 @@ test "std.zon arrays and slices" {
                 .gpa = gpa,
                 .arena = arena,
                 .source = ".{1}",
-                .errors = &errors,
+                .diagnostics = &diagnostics,
             });
             try std.testing.expectEqual(@as(usize, 1), sentinel.len);
             try std.testing.expectEqual(@as(u8, 1), sentinel[0]);
@@ -2353,13 +2353,13 @@ test "std.zon arrays and slices" {
                 .gpa = gpa,
                 .arena = arena,
                 .source = ".{'a', 'b', 'c'}",
-                .errors = &errors,
+                .diagnostics = &diagnostics,
             }),
         );
         try std.testing.expectFmt(
             \\input.zon:1:3: error: index 0 outside of array of length 0
             \\
-        , "{f}", .{errors.fmt("input.zon")});
+        , "{f}", .{diagnostics.fmt("input.zon")});
     }
 
     // Expect 1 find 2
@@ -2370,13 +2370,13 @@ test "std.zon arrays and slices" {
                 .gpa = gpa,
                 .arena = arena,
                 .source = ".{'a', 'b'}",
-                .errors = &errors,
+                .diagnostics = &diagnostics,
             }),
         );
         try std.testing.expectFmt(
             \\input.zon:1:8: error: index 1 outside of array of length 1
             \\
-        , "{f}", .{errors.fmt("input.zon")});
+        , "{f}", .{diagnostics.fmt("input.zon")});
     }
 
     // Expect 2 find 1
@@ -2387,13 +2387,13 @@ test "std.zon arrays and slices" {
                 .gpa = gpa,
                 .arena = arena,
                 .source = ".{'a'}",
-                .errors = &errors,
+                .diagnostics = &diagnostics,
             }),
         );
         try std.testing.expectFmt(
             \\input.zon:1:2: error: expected 2 array elements; found 1
             \\
-        , "{f}", .{errors.fmt("input.zon")});
+        , "{f}", .{diagnostics.fmt("input.zon")});
     }
 
     // Expect 3 find 0
@@ -2404,13 +2404,13 @@ test "std.zon arrays and slices" {
                 .gpa = gpa,
                 .arena = arena,
                 .source = ".{}",
-                .errors = &errors,
+                .diagnostics = &diagnostics,
             }),
         );
         try std.testing.expectFmt(
             \\input.zon:1:2: error: expected 3 array elements; found 0
             \\
-        , "{f}", .{errors.fmt("input.zon")});
+        , "{f}", .{diagnostics.fmt("input.zon")});
     }
 
     // Wrong inner type
@@ -2423,13 +2423,13 @@ test "std.zon arrays and slices" {
                     .gpa = gpa,
                     .arena = arena,
                     .source = ".{'a', 'b', 'c'}",
-                    .errors = &errors,
+                    .diagnostics = &diagnostics,
                 }),
             );
             try std.testing.expectFmt(
                 \\input.zon:1:3: error: expected type 'bool'
                 \\
-            , "{f}", .{errors.fmt("input.zon")});
+            , "{f}", .{diagnostics.fmt("input.zon")});
         }
 
         // Slice
@@ -2440,13 +2440,13 @@ test "std.zon arrays and slices" {
                     .gpa = gpa,
                     .arena = arena,
                     .source = ".{'a', 'b', 'c'}",
-                    .errors = &errors,
+                    .diagnostics = &diagnostics,
                 }),
             );
             try std.testing.expectFmt(
                 \\input.zon:1:3: error: expected type 'bool'
                 \\
-            , "{f}", .{errors.fmt("input.zon")});
+            , "{f}", .{diagnostics.fmt("input.zon")});
         }
     }
 
@@ -2460,25 +2460,25 @@ test "std.zon arrays and slices" {
                     .gpa = gpa,
                     .arena = arena,
                     .source = "'a'",
-                    .errors = &errors,
+                    .diagnostics = &diagnostics,
                 }),
             );
             try std.testing.expectFmt(
                 \\input.zon:1:1: error: expected array
                 \\
-            , "{f}", .{errors.fmt("input.zon")});
+            , "{f}", .{diagnostics.fmt("input.zon")});
         }
 
         // Slice
         {
             try std.testing.expectError(
                 error.ParseZon,
-                fromSlice([]u8, .{ .gpa = gpa, .arena = arena, .source = "'a'", .errors = &errors }),
+                fromSlice([]u8, .{ .gpa = gpa, .arena = arena, .source = "'a'", .diagnostics = &diagnostics }),
             );
             try std.testing.expectFmt(
                 \\input.zon:1:1: error: expected array
                 \\
-            , "{f}", .{errors.fmt("input.zon")});
+            , "{f}", .{diagnostics.fmt("input.zon")});
         }
     }
 
@@ -2486,12 +2486,12 @@ test "std.zon arrays and slices" {
     {
         try std.testing.expectError(
             error.ParseZon,
-            fromSlice([]u8, .{ .gpa = gpa, .arena = arena, .source = "  &.{'a', 'b', 'c'}", .errors = &errors }),
+            fromSlice([]u8, .{ .gpa = gpa, .arena = arena, .source = "  &.{'a', 'b', 'c'}", .diagnostics = &diagnostics }),
         );
         try std.testing.expectFmt(
             \\input.zon:1:3: error: pointers are not available in ZON
             \\
-        , "{f}", .{errors.fmt("input.zon")});
+        , "{f}", .{diagnostics.fmt("input.zon")});
     }
 }
 
@@ -2500,7 +2500,7 @@ test "std.zon string literal" {
     var arena_allocator: ArenaAllocator = .init(gpa);
     defer arena_allocator.deinit();
     const arena = arena_allocator.allocator();
-    var errors: Errors = .empty;
+    var diagnostics: Diagnostics = .empty;
 
     // Basic string literal
     {
@@ -2508,7 +2508,7 @@ test "std.zon string literal" {
             .gpa = gpa,
             .arena = arena,
             .source = "\"abc\"",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         });
         try std.testing.expectEqualStrings(@as([]const u8, "abc"), parsed);
     }
@@ -2519,7 +2519,7 @@ test "std.zon string literal" {
             .gpa = gpa,
             .arena = arena,
             .source = "\"ab\\nc\"",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         });
         try std.testing.expectEqualStrings(@as([]const u8, "ab\nc"), parsed);
     }
@@ -2530,7 +2530,7 @@ test "std.zon string literal" {
             .gpa = gpa,
             .arena = arena,
             .source = "\"ab\\x00c\"",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         });
         try std.testing.expectEqualStrings(@as([]const u8, "ab\x00c"), parsed);
     }
@@ -2540,23 +2540,23 @@ test "std.zon string literal" {
         {
             try std.testing.expectError(
                 error.ParseZon,
-                fromSlice([]u8, .{ .gpa = gpa, .arena = arena, .source = "\"abcd\"", .errors = &errors }),
+                fromSlice([]u8, .{ .gpa = gpa, .arena = arena, .source = "\"abcd\"", .diagnostics = &diagnostics }),
             );
             try std.testing.expectFmt(
                 \\input.zon:1:1: error: expected array
                 \\
-            , "{f}", .{errors.fmt("input.zon")});
+            , "{f}", .{diagnostics.fmt("input.zon")});
         }
 
         {
             try std.testing.expectError(
                 error.ParseZon,
-                fromSlice([]u8, .{ .gpa = gpa, .arena = arena, .source = "\\\\abcd", .errors = &errors }),
+                fromSlice([]u8, .{ .gpa = gpa, .arena = arena, .source = "\\\\abcd", .diagnostics = &diagnostics }),
             );
             try std.testing.expectFmt(
                 \\input.zon:1:1: error: expected array
                 \\
-            , "{f}", .{errors.fmt("input.zon")});
+            , "{f}", .{diagnostics.fmt("input.zon")});
         }
     }
 
@@ -2573,13 +2573,13 @@ test "std.zon string literal" {
                     .gpa = gpa,
                     .arena = arena,
                     .source = "\"abcd\"",
-                    .errors = &errors,
+                    .diagnostics = &diagnostics,
                 }),
             );
             try std.testing.expectFmt(
                 \\input.zon:1:1: error: expected array
                 \\
-            , "{f}", .{errors.fmt("input.zon")});
+            , "{f}", .{diagnostics.fmt("input.zon")});
         }
 
         {
@@ -2589,13 +2589,13 @@ test "std.zon string literal" {
                     .gpa = gpa,
                     .arena = arena,
                     .source = "\\\\abcd",
-                    .errors = &errors,
+                    .diagnostics = &diagnostics,
                 }),
             );
             try std.testing.expectFmt(
                 \\input.zon:1:1: error: expected array
                 \\
-            , "{f}", .{errors.fmt("input.zon")});
+            , "{f}", .{diagnostics.fmt("input.zon")});
         }
     }
 
@@ -2606,7 +2606,7 @@ test "std.zon string literal" {
                 .gpa = gpa,
                 .arena = arena,
                 .source = "\"abc\"",
-                .errors = &errors,
+                .diagnostics = &diagnostics,
             });
             try std.testing.expectEqualStrings("abc", parsed);
             try std.testing.expectEqual(@as(u8, 0), parsed[3]);
@@ -2617,7 +2617,7 @@ test "std.zon string literal" {
                 .gpa = gpa,
                 .arena = arena,
                 .source = "\\\\abc",
-                .errors = &errors,
+                .diagnostics = &diagnostics,
             });
             try std.testing.expectEqualStrings("abc", parsed);
             try std.testing.expectEqual(@as(u8, 0), parsed[3]);
@@ -2629,23 +2629,23 @@ test "std.zon string literal" {
         {
             try std.testing.expectError(
                 error.ParseZon,
-                fromSlice([:1]const u8, .{ .gpa = gpa, .arena = arena, .source = "\"foo\"", .errors = &errors }),
+                fromSlice([:1]const u8, .{ .gpa = gpa, .arena = arena, .source = "\"foo\"", .diagnostics = &diagnostics }),
             );
             try std.testing.expectFmt(
                 \\input.zon:1:1: error: expected array
                 \\
-            , "{f}", .{errors.fmt("input.zon")});
+            , "{f}", .{diagnostics.fmt("input.zon")});
         }
 
         {
             try std.testing.expectError(
                 error.ParseZon,
-                fromSlice([:1]const u8, .{ .gpa = gpa, .arena = arena, .source = "\\\\foo", .errors = &errors }),
+                fromSlice([:1]const u8, .{ .gpa = gpa, .arena = arena, .source = "\\\\foo", .diagnostics = &diagnostics }),
             );
             try std.testing.expectFmt(
                 \\input.zon:1:1: error: expected array
                 \\
-            , "{f}", .{errors.fmt("input.zon")});
+            , "{f}", .{diagnostics.fmt("input.zon")});
         }
     }
 
@@ -2653,36 +2653,36 @@ test "std.zon string literal" {
     {
         try std.testing.expectError(
             error.ParseZon,
-            fromSlice([]const u8, .{ .gpa = gpa, .arena = arena, .source = "true", .errors = &errors }),
+            fromSlice([]const u8, .{ .gpa = gpa, .arena = arena, .source = "true", .diagnostics = &diagnostics }),
         );
         try std.testing.expectFmt(
             \\input.zon:1:1: error: expected string
             \\
-        , "{f}", .{errors.fmt("input.zon")});
+        , "{f}", .{diagnostics.fmt("input.zon")});
     }
 
     // Expecting string literal, getting an incompatible tuple
     {
         try std.testing.expectError(
             error.ParseZon,
-            fromSlice([]const u8, .{ .gpa = gpa, .arena = arena, .source = ".{false}", .errors = &errors }),
+            fromSlice([]const u8, .{ .gpa = gpa, .arena = arena, .source = ".{false}", .diagnostics = &diagnostics }),
         );
         try std.testing.expectFmt(
             \\input.zon:1:3: error: expected type 'u8'
             \\
-        , "{f}", .{errors.fmt("input.zon")});
+        , "{f}", .{diagnostics.fmt("input.zon")});
     }
 
     // Invalid string literal
     {
         try std.testing.expectError(
             error.ParseZon,
-            fromSlice([]const i8, .{ .gpa = gpa, .arena = arena, .source = "\"\\a\"", .errors = &errors }),
+            fromSlice([]const i8, .{ .gpa = gpa, .arena = arena, .source = "\"\\a\"", .diagnostics = &diagnostics }),
         );
         try std.testing.expectFmt(
             \\input.zon:1:3: error: invalid escape character: 'a'
             \\
-        , "{f}", .{errors.fmt("input.zon")});
+        , "{f}", .{diagnostics.fmt("input.zon")});
     }
 
     // Slice wrong child type
@@ -2690,23 +2690,23 @@ test "std.zon string literal" {
         {
             try std.testing.expectError(
                 error.ParseZon,
-                fromSlice([]const i8, .{ .gpa = gpa, .arena = arena, .source = "\"a\"", .errors = &errors }),
+                fromSlice([]const i8, .{ .gpa = gpa, .arena = arena, .source = "\"a\"", .diagnostics = &diagnostics }),
             );
             try std.testing.expectFmt(
                 \\input.zon:1:1: error: expected array
                 \\
-            , "{f}", .{errors.fmt("input.zon")});
+            , "{f}", .{diagnostics.fmt("input.zon")});
         }
 
         {
             try std.testing.expectError(
                 error.ParseZon,
-                fromSlice([]const i8, .{ .gpa = gpa, .arena = arena, .source = "\\\\a", .errors = &errors }),
+                fromSlice([]const i8, .{ .gpa = gpa, .arena = arena, .source = "\\\\a", .diagnostics = &diagnostics }),
             );
             try std.testing.expectFmt(
                 \\input.zon:1:1: error: expected array
                 \\
-            , "{f}", .{errors.fmt("input.zon")});
+            , "{f}", .{diagnostics.fmt("input.zon")});
         }
     }
 
@@ -2719,13 +2719,13 @@ test "std.zon string literal" {
                     .gpa = gpa,
                     .arena = arena,
                     .source = "\"abc\"",
-                    .errors = &errors,
+                    .diagnostics = &diagnostics,
                 }),
             );
             try std.testing.expectFmt(
                 \\input.zon:1:1: error: expected array
                 \\
-            , "{f}", .{errors.fmt("input.zon")});
+            , "{f}", .{diagnostics.fmt("input.zon")});
         }
 
         {
@@ -2735,13 +2735,13 @@ test "std.zon string literal" {
                     .gpa = gpa,
                     .arena = arena,
                     .source = "\\\\abc",
-                    .errors = &errors,
+                    .diagnostics = &diagnostics,
                 }),
             );
             try std.testing.expectFmt(
                 \\input.zon:1:1: error: expected array
                 \\
-            , "{f}", .{errors.fmt("input.zon")});
+            , "{f}", .{diagnostics.fmt("input.zon")});
         }
     }
 
@@ -2775,7 +2775,7 @@ test "std.zon string literal" {
                 \\        \\and this.
                 \\}
                 ,
-                .errors = &errors,
+                .diagnostics = &diagnostics,
             });
             try std.testing.expectEqualStrings(
                 "hello, world!\nthis is a multiline string!\n\n...",
@@ -2792,7 +2792,7 @@ test "std.zon enum literals" {
     var arena_allocator: ArenaAllocator = .init(gpa);
     defer arena_allocator.deinit();
     const arena = arena_allocator.allocator();
-    var errors: Errors = .empty;
+    var diagnostics: Diagnostics = .empty;
 
     const Enum = enum {
         foo,
@@ -2806,19 +2806,19 @@ test "std.zon enum literals" {
         .gpa = gpa,
         .arena = arena,
         .source = ".foo",
-        .errors = &errors,
+        .diagnostics = &diagnostics,
     }));
     try std.testing.expectEqual(Enum.bar, try fromSliceNoAlloc(Enum, .{
         .gpa = gpa,
         .arena = arena,
         .source = ".bar",
-        .errors = &errors,
+        .diagnostics = &diagnostics,
     }));
     try std.testing.expectEqual(Enum.baz, try fromSliceNoAlloc(Enum, .{
         .gpa = gpa,
         .arena = arena,
         .source = ".baz",
-        .errors = &errors,
+        .diagnostics = &diagnostics,
     }));
     try std.testing.expectEqual(
         Enum.@"ab\nc",
@@ -2826,7 +2826,7 @@ test "std.zon enum literals" {
             .gpa = gpa,
             .arena = arena,
             .source = ".@\"ab\\nc\"",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         }),
     );
 
@@ -2838,14 +2838,14 @@ test "std.zon enum literals" {
                 .gpa = gpa,
                 .arena = arena,
                 .source = ".qux",
-                .errors = &errors,
+                .diagnostics = &diagnostics,
             }),
         );
         try std.testing.expectFmt(
             \\input.zon:1:2: error: unexpected enum literal 'qux'
             \\input.zon:1:2: note: supported: 'foo', 'bar', 'baz', '@"ab\nc"'
             \\
-        , "{f}", .{errors.fmt("input.zon")});
+        , "{f}", .{diagnostics.fmt("input.zon")});
     }
 
     // Bad tag that's too long for parser
@@ -2856,14 +2856,14 @@ test "std.zon enum literals" {
                 .gpa = gpa,
                 .arena = arena,
                 .source = ".@\"foobarbaz\"",
-                .errors = &errors,
+                .diagnostics = &diagnostics,
             }),
         );
         try std.testing.expectFmt(
             \\input.zon:1:2: error: unexpected enum literal 'foobarbaz'
             \\input.zon:1:2: note: supported: 'foo', 'bar', 'baz', '@"ab\nc"'
             \\
-        , "{f}", .{errors.fmt("input.zon")});
+        , "{f}", .{diagnostics.fmt("input.zon")});
     }
 
     // Bad type
@@ -2874,13 +2874,13 @@ test "std.zon enum literals" {
                 .gpa = gpa,
                 .arena = arena,
                 .source = "true",
-                .errors = &errors,
+                .diagnostics = &diagnostics,
             }),
         );
         try std.testing.expectFmt(
             \\input.zon:1:1: error: expected enum literal
             \\
-        , "{f}", .{errors.fmt("input.zon")});
+        , "{f}", .{diagnostics.fmt("input.zon")});
     }
 
     // Test embedded nulls in an identifier
@@ -2891,13 +2891,13 @@ test "std.zon enum literals" {
                 .gpa = gpa,
                 .arena = arena,
                 .source = ".@\"\\x00\"",
-                .errors = &errors,
+                .diagnostics = &diagnostics,
             }),
         );
         try std.testing.expectFmt(
             \\input.zon:1:2: error: identifier cannot contain null bytes
             \\
-        , "{f}", .{errors.fmt("input.zon")});
+        , "{f}", .{diagnostics.fmt("input.zon")});
     }
 }
 
@@ -2906,20 +2906,20 @@ test "std.zon parse bool" {
     var arena_allocator: ArenaAllocator = .init(gpa);
     defer arena_allocator.deinit();
     const arena = arena_allocator.allocator();
-    var errors: Errors = .empty;
+    var diagnostics: Diagnostics = .empty;
 
     // Correct bools
     try std.testing.expectEqual(true, try fromSliceNoAlloc(bool, .{
         .gpa = gpa,
         .arena = arena,
         .source = "true",
-        .errors = &errors,
+        .diagnostics = &diagnostics,
     }));
     try std.testing.expectEqual(false, try fromSliceNoAlloc(bool, .{
         .gpa = gpa,
         .arena = arena,
         .source = "false",
-        .errors = &errors,
+        .diagnostics = &diagnostics,
     }));
 
     // Errors
@@ -2930,7 +2930,7 @@ test "std.zon parse bool" {
                 .gpa = gpa,
                 .arena = arena,
                 .source = " foo",
-                .errors = &errors,
+                .diagnostics = &diagnostics,
             }),
         );
         try std.testing.expectFmt(
@@ -2938,19 +2938,19 @@ test "std.zon parse bool" {
             \\input.zon:1:2: note: ZON allows identifiers 'true', 'false', 'null', 'inf', and 'nan'
             \\input.zon:1:2: note: precede identifier with '.' for an enum literal
             \\
-        , "{f}", .{errors.fmt("input.zon")});
+        , "{f}", .{diagnostics.fmt("input.zon")});
     }
     {
         try std.testing.expectError(error.ParseZon, fromSliceNoAlloc(bool, .{
             .gpa = gpa,
             .arena = arena,
             .source = "123",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         }));
         try std.testing.expectFmt(
             \\input.zon:1:1: error: expected type 'bool'
             \\
-        , "{f}", .{errors.fmt("input.zon")});
+        , "{f}", .{diagnostics.fmt("input.zon")});
     }
 }
 
@@ -2981,32 +2981,32 @@ test "std.zon parse int" {
     var arena_allocator: ArenaAllocator = .init(gpa);
     defer arena_allocator.deinit();
     const arena = arena_allocator.allocator();
-    var errors: Errors = .empty;
+    var diagnostics: Diagnostics = .empty;
 
     // Test various numbers and types
     try std.testing.expectEqual(@as(u8, 10), try fromSliceNoAlloc(u8, .{
         .gpa = gpa,
         .arena = arena,
         .source = "10",
-        .errors = &errors,
+        .diagnostics = &diagnostics,
     }));
     try std.testing.expectEqual(@as(i16, 24), try fromSliceNoAlloc(i16, .{
         .gpa = gpa,
         .arena = arena,
         .source = "24",
-        .errors = &errors,
+        .diagnostics = &diagnostics,
     }));
     try std.testing.expectEqual(@as(i14, -4), try fromSliceNoAlloc(i14, .{
         .gpa = gpa,
         .arena = arena,
         .source = "-4",
-        .errors = &errors,
+        .diagnostics = &diagnostics,
     }));
     try std.testing.expectEqual(@as(i32, -123), try fromSliceNoAlloc(i32, .{
         .gpa = gpa,
         .arena = arena,
         .source = "-123",
-        .errors = &errors,
+        .diagnostics = &diagnostics,
     }));
 
     // Test limits
@@ -3014,13 +3014,13 @@ test "std.zon parse int" {
         .gpa = gpa,
         .arena = arena,
         .source = "127",
-        .errors = &errors,
+        .diagnostics = &diagnostics,
     }));
     try std.testing.expectEqual(@as(i8, -128), try fromSliceNoAlloc(i8, .{
         .gpa = gpa,
         .arena = arena,
         .source = "-128",
-        .errors = &errors,
+        .diagnostics = &diagnostics,
     }));
 
     // Test characters
@@ -3028,13 +3028,13 @@ test "std.zon parse int" {
         .gpa = gpa,
         .arena = arena,
         .source = "'a'",
-        .errors = &errors,
+        .diagnostics = &diagnostics,
     }));
     try std.testing.expectEqual(@as(u8, 'z'), try fromSliceNoAlloc(u8, .{
         .gpa = gpa,
         .arena = arena,
         .source = "'z'",
-        .errors = &errors,
+        .diagnostics = &diagnostics,
     }));
 
     // Test big integers
@@ -3044,7 +3044,7 @@ test "std.zon parse int" {
             .gpa = gpa,
             .arena = arena,
             .source = "36893488147419103231",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         }),
     );
     try std.testing.expectEqual(
@@ -3053,7 +3053,7 @@ test "std.zon parse int" {
             .gpa = gpa,
             .arena = arena,
             .source = "368934_881_474191032_31",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         }),
     );
     try std.testing.expectEqual(
@@ -3062,7 +3062,7 @@ test "std.zon parse int" {
             .gpa = gpa,
             .arena = arena,
             .source = "340282366920938463463374607431768211455",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         }),
     );
 
@@ -3073,7 +3073,7 @@ test "std.zon parse int" {
             .gpa = gpa,
             .arena = arena,
             .source = "36893488147419103231",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         }),
     );
     try std.testing.expectEqual(
@@ -3082,7 +3082,7 @@ test "std.zon parse int" {
             .gpa = gpa,
             .arena = arena,
             .source = "-36893488147419103232",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         }),
     );
     {
@@ -3090,24 +3090,24 @@ test "std.zon parse int" {
             .gpa = gpa,
             .arena = arena,
             .source = "36893488147419103232",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         }));
         try std.testing.expectFmt(
             \\input.zon:1:1: error: type 'i66' cannot represent value
             \\
-        , "{f}", .{errors.fmt("input.zon")});
+        , "{f}", .{diagnostics.fmt("input.zon")});
     }
     {
         try std.testing.expectError(error.ParseZon, fromSliceNoAlloc(i66, .{
             .gpa = gpa,
             .arena = arena,
             .source = "-36893488147419103233",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         }));
         try std.testing.expectFmt(
             \\input.zon:1:1: error: type 'i66' cannot represent value
             \\
-        , "{f}", .{errors.fmt("input.zon")});
+        , "{f}", .{diagnostics.fmt("input.zon")});
     }
 
     // Test parsing whole number floats as integers
@@ -3115,13 +3115,13 @@ test "std.zon parse int" {
         .gpa = gpa,
         .arena = arena,
         .source = "-1.0",
-        .errors = &errors,
+        .diagnostics = &diagnostics,
     }));
     try std.testing.expectEqual(@as(i8, 123), try fromSliceNoAlloc(i8, .{
         .gpa = gpa,
         .arena = arena,
         .source = "123.0",
-        .errors = &errors,
+        .diagnostics = &diagnostics,
     }));
 
     // Test non-decimal integers
@@ -3129,37 +3129,37 @@ test "std.zon parse int" {
         .gpa = gpa,
         .arena = arena,
         .source = "0xff",
-        .errors = &errors,
+        .diagnostics = &diagnostics,
     }));
     try std.testing.expectEqual(@as(i16, -0xff), try fromSliceNoAlloc(i16, .{
         .gpa = gpa,
         .arena = arena,
         .source = "-0xff",
-        .errors = &errors,
+        .diagnostics = &diagnostics,
     }));
     try std.testing.expectEqual(@as(i16, 0o77), try fromSliceNoAlloc(i16, .{
         .gpa = gpa,
         .arena = arena,
         .source = "0o77",
-        .errors = &errors,
+        .diagnostics = &diagnostics,
     }));
     try std.testing.expectEqual(@as(i16, -0o77), try fromSliceNoAlloc(i16, .{
         .gpa = gpa,
         .arena = arena,
         .source = "-0o77",
-        .errors = &errors,
+        .diagnostics = &diagnostics,
     }));
     try std.testing.expectEqual(@as(i16, 0b11), try fromSliceNoAlloc(i16, .{
         .gpa = gpa,
         .arena = arena,
         .source = "0b11",
-        .errors = &errors,
+        .diagnostics = &diagnostics,
     }));
     try std.testing.expectEqual(@as(i16, -0b11), try fromSliceNoAlloc(i16, .{
         .gpa = gpa,
         .arena = arena,
         .source = "-0b11",
-        .errors = &errors,
+        .diagnostics = &diagnostics,
     }));
 
     // Test non-decimal big integers
@@ -3167,55 +3167,55 @@ test "std.zon parse int" {
         .gpa = gpa,
         .arena = arena,
         .source = "0x1ffffffffffffffff",
-        .errors = &errors,
+        .diagnostics = &diagnostics,
     }));
     try std.testing.expectEqual(@as(i66, 0x1ffffffffffffffff), try fromSliceNoAlloc(i66, .{
         .gpa = gpa,
         .arena = arena,
         .source = "0x1ffffffffffffffff",
-        .errors = &errors,
+        .diagnostics = &diagnostics,
     }));
     try std.testing.expectEqual(@as(i66, -0x1ffffffffffffffff), try fromSliceNoAlloc(i66, .{
         .gpa = gpa,
         .arena = arena,
         .source = "-0x1ffffffffffffffff",
-        .errors = &errors,
+        .diagnostics = &diagnostics,
     }));
     try std.testing.expectEqual(@as(u65, 0x1ffffffffffffffff), try fromSliceNoAlloc(u65, .{
         .gpa = gpa,
         .arena = arena,
         .source = "0o3777777777777777777777",
-        .errors = &errors,
+        .diagnostics = &diagnostics,
     }));
     try std.testing.expectEqual(@as(i66, 0x1ffffffffffffffff), try fromSliceNoAlloc(i66, .{
         .gpa = gpa,
         .arena = arena,
         .source = "0o3777777777777777777777",
-        .errors = &errors,
+        .diagnostics = &diagnostics,
     }));
     try std.testing.expectEqual(@as(i66, -0x1ffffffffffffffff), try fromSliceNoAlloc(i66, .{
         .gpa = gpa,
         .arena = arena,
         .source = "-0o3777777777777777777777",
-        .errors = &errors,
+        .diagnostics = &diagnostics,
     }));
     try std.testing.expectEqual(@as(u65, 0x1ffffffffffffffff), try fromSliceNoAlloc(u65, .{
         .gpa = gpa,
         .arena = arena,
         .source = "0b11111111111111111111111111111111111111111111111111111111111111111",
-        .errors = &errors,
+        .diagnostics = &diagnostics,
     }));
     try std.testing.expectEqual(@as(i66, 0x1ffffffffffffffff), try fromSliceNoAlloc(i66, .{
         .gpa = gpa,
         .arena = arena,
         .source = "0b11111111111111111111111111111111111111111111111111111111111111111",
-        .errors = &errors,
+        .diagnostics = &diagnostics,
     }));
     try std.testing.expectEqual(@as(i66, -0x1ffffffffffffffff), try fromSliceNoAlloc(i66, .{
         .gpa = gpa,
         .arena = arena,
         .source = "-0b11111111111111111111111111111111111111111111111111111111111111111",
-        .errors = &errors,
+        .diagnostics = &diagnostics,
     }));
 
     // Number with invalid character in the middle
@@ -3224,12 +3224,12 @@ test "std.zon parse int" {
             .gpa = gpa,
             .arena = arena,
             .source = "32a32",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         }));
         try std.testing.expectFmt(
             \\input.zon:1:3: error: invalid digit 'a' for decimal base
             \\
-        , "{f}", .{errors.fmt("input.zon")});
+        , "{f}", .{diagnostics.fmt("input.zon")});
     }
 
     // Failing to parse as int
@@ -3238,12 +3238,12 @@ test "std.zon parse int" {
             .gpa = gpa,
             .arena = arena,
             .source = "true",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         }));
         try std.testing.expectFmt(
             \\input.zon:1:1: error: expected type 'u8'
             \\
-        , "{f}", .{errors.fmt("input.zon")});
+        , "{f}", .{diagnostics.fmt("input.zon")});
     }
 
     // Failing because an int is out of range
@@ -3252,12 +3252,12 @@ test "std.zon parse int" {
             .gpa = gpa,
             .arena = arena,
             .source = "256",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         }));
         try std.testing.expectFmt(
             \\input.zon:1:1: error: type 'u8' cannot represent value
             \\
-        , "{f}", .{errors.fmt("input.zon")});
+        , "{f}", .{diagnostics.fmt("input.zon")});
     }
 
     // Failing because a negative int is out of range
@@ -3266,12 +3266,12 @@ test "std.zon parse int" {
             .gpa = gpa,
             .arena = arena,
             .source = "-129",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         }));
         try std.testing.expectFmt(
             \\input.zon:1:1: error: type 'i8' cannot represent value
             \\
-        , "{f}", .{errors.fmt("input.zon")});
+        , "{f}", .{diagnostics.fmt("input.zon")});
     }
 
     // Failing because an unsigned int is negative
@@ -3280,12 +3280,12 @@ test "std.zon parse int" {
             .gpa = gpa,
             .arena = arena,
             .source = "-1",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         }));
         try std.testing.expectFmt(
             \\input.zon:1:1: error: type 'u8' cannot represent value
             \\
-        , "{f}", .{errors.fmt("input.zon")});
+        , "{f}", .{diagnostics.fmt("input.zon")});
     }
 
     // Failing because a float is non-whole
@@ -3294,12 +3294,12 @@ test "std.zon parse int" {
             .gpa = gpa,
             .arena = arena,
             .source = "1.5",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         }));
         try std.testing.expectFmt(
             \\input.zon:1:1: error: type 'u8' cannot represent value
             \\
-        , "{f}", .{errors.fmt("input.zon")});
+        , "{f}", .{diagnostics.fmt("input.zon")});
     }
 
     // Failing because a float is negative
@@ -3308,12 +3308,12 @@ test "std.zon parse int" {
             .gpa = gpa,
             .arena = arena,
             .source = "-1.0",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         }));
         try std.testing.expectFmt(
             \\input.zon:1:1: error: type 'u8' cannot represent value
             \\
-        , "{f}", .{errors.fmt("input.zon")});
+        , "{f}", .{diagnostics.fmt("input.zon")});
     }
 
     // Negative integer zero
@@ -3322,14 +3322,14 @@ test "std.zon parse int" {
             .gpa = gpa,
             .arena = arena,
             .source = "-0",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         }));
         try std.testing.expectFmt(
             \\input.zon:1:2: error: integer literal '-0' is ambiguous
             \\input.zon:1:2: note: use '0' for an integer zero
             \\input.zon:1:2: note: use '-0.0' for a floating-point signed zero
             \\
-        , "{f}", .{errors.fmt("input.zon")});
+        , "{f}", .{diagnostics.fmt("input.zon")});
     }
 
     // Negative integer zero casted to float
@@ -3338,14 +3338,14 @@ test "std.zon parse int" {
             .gpa = gpa,
             .arena = arena,
             .source = "-0",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         }));
         try std.testing.expectFmt(
             \\input.zon:1:2: error: integer literal '-0' is ambiguous
             \\input.zon:1:2: note: use '0' for an integer zero
             \\input.zon:1:2: note: use '-0.0' for a floating-point signed zero
             \\
-        , "{f}", .{errors.fmt("input.zon")});
+        , "{f}", .{diagnostics.fmt("input.zon")});
     }
 
     // Negative float 0 is allowed
@@ -3354,14 +3354,14 @@ test "std.zon parse int" {
             .gpa = gpa,
             .arena = arena,
             .source = "-0.0",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         })),
     );
     try std.testing.expect(std.math.isPositiveZero(try fromSliceNoAlloc(f32, .{
         .gpa = gpa,
         .arena = arena,
         .source = "0.0",
-        .errors = &errors,
+        .diagnostics = &diagnostics,
     })));
 
     // Double negation is not allowed
@@ -3370,12 +3370,12 @@ test "std.zon parse int" {
             .gpa = gpa,
             .arena = arena,
             .source = "--2",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         }));
         try std.testing.expectFmt(
             \\input.zon:1:1: error: expected number or 'inf' after '-'
             \\
-        , "{f}", .{errors.fmt("input.zon")});
+        , "{f}", .{diagnostics.fmt("input.zon")});
     }
 
     {
@@ -3385,13 +3385,13 @@ test "std.zon parse int" {
                 .gpa = gpa,
                 .arena = arena,
                 .source = "--2.0",
-                .errors = &errors,
+                .diagnostics = &diagnostics,
             }),
         );
         try std.testing.expectFmt(
             \\input.zon:1:1: error: expected number or 'inf' after '-'
             \\
-        , "{f}", .{errors.fmt("input.zon")});
+        , "{f}", .{diagnostics.fmt("input.zon")});
     }
 
     // Invalid int literal
@@ -3400,12 +3400,12 @@ test "std.zon parse int" {
             .gpa = gpa,
             .arena = arena,
             .source = "0xg",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         }));
         try std.testing.expectFmt(
             \\input.zon:1:3: error: invalid digit 'g' for hex base
             \\
-        , "{f}", .{errors.fmt("input.zon")});
+        , "{f}", .{diagnostics.fmt("input.zon")});
     }
 
     // Notes on invalid int literal
@@ -3414,13 +3414,13 @@ test "std.zon parse int" {
             .gpa = gpa,
             .arena = arena,
             .source = "0123",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         }));
         try std.testing.expectFmt(
             \\input.zon:1:1: error: number '0123' has leading zero
             \\input.zon:1:1: note: use '0o' prefix for octal literals
             \\
-        , "{f}", .{errors.fmt("input.zon")});
+        , "{f}", .{diagnostics.fmt("input.zon")});
     }
 }
 
@@ -3429,31 +3429,31 @@ test "std.zon negative char" {
     var arena_allocator: ArenaAllocator = .init(gpa);
     defer arena_allocator.deinit();
     const arena = arena_allocator.allocator();
-    var errors: Errors = .empty;
+    var diagnostics: Diagnostics = .empty;
 
     {
         try std.testing.expectError(error.ParseZon, fromSliceNoAlloc(f32, .{
             .gpa = gpa,
             .arena = arena,
             .source = "-'a'",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         }));
         try std.testing.expectFmt(
             \\input.zon:1:1: error: expected number or 'inf' after '-'
             \\
-        , "{f}", .{errors.fmt("input.zon")});
+        , "{f}", .{diagnostics.fmt("input.zon")});
     }
     {
         try std.testing.expectError(error.ParseZon, fromSliceNoAlloc(i16, .{
             .gpa = gpa,
             .arena = arena,
             .source = "-'a'",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         }));
         try std.testing.expectFmt(
             \\input.zon:1:1: error: expected number or 'inf' after '-'
             \\
-        , "{f}", .{errors.fmt("input.zon")});
+        , "{f}", .{diagnostics.fmt("input.zon")});
     }
 }
 
@@ -3464,14 +3464,14 @@ test "std.zon parse float" {
     var arena_allocator: ArenaAllocator = .init(gpa);
     defer arena_allocator.deinit();
     const arena = arena_allocator.allocator();
-    var errors: Errors = .empty;
+    var diagnostics: Diagnostics = .empty;
 
     // Test decimals
     try std.testing.expectEqual(@as(f16, 0.5), try fromSliceNoAlloc(f16, .{
         .gpa = gpa,
         .arena = arena,
         .source = "0.5",
-        .errors = &errors,
+        .diagnostics = &diagnostics,
     }));
     try std.testing.expectEqual(
         @as(f32, 123.456),
@@ -3479,7 +3479,7 @@ test "std.zon parse float" {
             .gpa = gpa,
             .arena = arena,
             .source = "123.456",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         }),
     );
     try std.testing.expectEqual(
@@ -3488,14 +3488,14 @@ test "std.zon parse float" {
             .gpa = gpa,
             .arena = arena,
             .source = "-123.456",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         }),
     );
     try std.testing.expectEqual(@as(f128, 42.5), try fromSliceNoAlloc(f128, .{
         .gpa = gpa,
         .arena = arena,
         .source = "42.5",
-        .errors = &errors,
+        .diagnostics = &diagnostics,
     }));
 
     // Test whole numbers with and without decimals
@@ -3503,25 +3503,25 @@ test "std.zon parse float" {
         .gpa = gpa,
         .arena = arena,
         .source = "5.0",
-        .errors = &errors,
+        .diagnostics = &diagnostics,
     }));
     try std.testing.expectEqual(@as(f16, 5.0), try fromSliceNoAlloc(f16, .{
         .gpa = gpa,
         .arena = arena,
         .source = "5",
-        .errors = &errors,
+        .diagnostics = &diagnostics,
     }));
     try std.testing.expectEqual(@as(f32, -102), try fromSliceNoAlloc(f32, .{
         .gpa = gpa,
         .arena = arena,
         .source = "-102.0",
-        .errors = &errors,
+        .diagnostics = &diagnostics,
     }));
     try std.testing.expectEqual(@as(f32, -102), try fromSliceNoAlloc(f32, .{
         .gpa = gpa,
         .arena = arena,
         .source = "-102",
-        .errors = &errors,
+        .diagnostics = &diagnostics,
     }));
 
     // Test characters and negated characters
@@ -3529,13 +3529,13 @@ test "std.zon parse float" {
         .gpa = gpa,
         .arena = arena,
         .source = "'a'",
-        .errors = &errors,
+        .diagnostics = &diagnostics,
     }));
     try std.testing.expectEqual(@as(f32, 'z'), try fromSliceNoAlloc(f32, .{
         .gpa = gpa,
         .arena = arena,
         .source = "'z'",
-        .errors = &errors,
+        .diagnostics = &diagnostics,
     }));
 
     // Test big integers
@@ -3545,7 +3545,7 @@ test "std.zon parse float" {
             .gpa = gpa,
             .arena = arena,
             .source = "36893488147419103231",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         }),
     );
     try std.testing.expectEqual(
@@ -3554,20 +3554,20 @@ test "std.zon parse float" {
             .gpa = gpa,
             .arena = arena,
             .source = "-36893488147419103231",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         }),
     );
     try std.testing.expectEqual(@as(f128, 0x1ffffffffffffffff), try fromSliceNoAlloc(f128, .{
         .gpa = gpa,
         .arena = arena,
         .source = "0x1ffffffffffffffff",
-        .errors = &errors,
+        .diagnostics = &diagnostics,
     }));
     try std.testing.expectEqual(@as(f32, @floatFromInt(0x1ffffffffffffffff)), try fromSliceNoAlloc(f32, .{
         .gpa = gpa,
         .arena = arena,
         .source = "0x1ffffffffffffffff",
-        .errors = &errors,
+        .diagnostics = &diagnostics,
     }));
 
     // Exponents, underscores
@@ -3577,7 +3577,7 @@ test "std.zon parse float" {
             .gpa = gpa,
             .arena = arena,
             .source = "12_3.0E+77",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         }),
     );
 
@@ -3588,7 +3588,7 @@ test "std.zon parse float" {
             .gpa = gpa,
             .arena = arena,
             .source = "0x103.70p-5",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         }),
     );
     try std.testing.expectEqual(
@@ -3597,7 +3597,7 @@ test "std.zon parse float" {
             .gpa = gpa,
             .arena = arena,
             .source = "-0x103.70",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         }),
     );
     try std.testing.expectEqual(
@@ -3606,7 +3606,7 @@ test "std.zon parse float" {
             .gpa = gpa,
             .arena = arena,
             .source = "0x1234_5678.9ABC_CDEFp-10",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         }),
     );
 
@@ -3615,19 +3615,19 @@ test "std.zon parse float" {
         .gpa = gpa,
         .arena = arena,
         .source = "inf",
-        .errors = &errors,
+        .diagnostics = &diagnostics,
     })));
     try std.testing.expect(std.math.isNegativeInf(try fromSliceNoAlloc(f32, .{
         .gpa = gpa,
         .arena = arena,
         .source = "-inf",
-        .errors = &errors,
+        .diagnostics = &diagnostics,
     })));
     try std.testing.expect(std.math.isNan(try fromSliceNoAlloc(f32, .{
         .gpa = gpa,
         .arena = arena,
         .source = "nan",
-        .errors = &errors,
+        .diagnostics = &diagnostics,
     })));
 
     // Negative nan not allowed
@@ -3636,12 +3636,12 @@ test "std.zon parse float" {
             .gpa = gpa,
             .arena = arena,
             .source = "-nan",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         }));
         try std.testing.expectFmt(
             \\input.zon:1:1: error: expected number or 'inf' after '-'
             \\
-        , "{f}", .{errors.fmt("input.zon")});
+        , "{f}", .{diagnostics.fmt("input.zon")});
     }
 
     // nan as int not allowed
@@ -3650,12 +3650,12 @@ test "std.zon parse float" {
             .gpa = gpa,
             .arena = arena,
             .source = "nan",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         }));
         try std.testing.expectFmt(
             \\input.zon:1:1: error: expected type 'i8'
             \\
-        , "{f}", .{errors.fmt("input.zon")});
+        , "{f}", .{diagnostics.fmt("input.zon")});
     }
 
     // nan as int not allowed
@@ -3664,12 +3664,12 @@ test "std.zon parse float" {
             .gpa = gpa,
             .arena = arena,
             .source = "nan",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         }));
         try std.testing.expectFmt(
             \\input.zon:1:1: error: expected type 'i8'
             \\
-        , "{f}", .{errors.fmt("input.zon")});
+        , "{f}", .{diagnostics.fmt("input.zon")});
     }
 
     // inf as int not allowed
@@ -3678,12 +3678,12 @@ test "std.zon parse float" {
             .gpa = gpa,
             .arena = arena,
             .source = "inf",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         }));
         try std.testing.expectFmt(
             \\input.zon:1:1: error: expected type 'i8'
             \\
-        , "{f}", .{errors.fmt("input.zon")});
+        , "{f}", .{diagnostics.fmt("input.zon")});
     }
 
     // -inf as int not allowed
@@ -3692,12 +3692,12 @@ test "std.zon parse float" {
             .gpa = gpa,
             .arena = arena,
             .source = "-inf",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         }));
         try std.testing.expectFmt(
             \\input.zon:1:1: error: expected type 'i8'
             \\
-        , "{f}", .{errors.fmt("input.zon")});
+        , "{f}", .{diagnostics.fmt("input.zon")});
     }
 
     // Bad identifier as float
@@ -3706,14 +3706,14 @@ test "std.zon parse float" {
             .gpa = gpa,
             .arena = arena,
             .source = "foo",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         }));
         try std.testing.expectFmt(
             \\input.zon:1:1: error: invalid expression
             \\input.zon:1:1: note: ZON allows identifiers 'true', 'false', 'null', 'inf', and 'nan'
             \\input.zon:1:1: note: precede identifier with '.' for an enum literal
             \\
-        , "{f}", .{errors.fmt("input.zon")});
+        , "{f}", .{diagnostics.fmt("input.zon")});
     }
 
     {
@@ -3721,12 +3721,12 @@ test "std.zon parse float" {
             .gpa = gpa,
             .arena = arena,
             .source = "-foo",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         }));
         try std.testing.expectFmt(
             \\input.zon:1:1: error: expected number or 'inf' after '-'
             \\
-        , "{f}", .{errors.fmt("input.zon")});
+        , "{f}", .{diagnostics.fmt("input.zon")});
     }
 
     // Non float as float
@@ -3737,13 +3737,13 @@ test "std.zon parse float" {
                 .gpa = gpa,
                 .arena = arena,
                 .source = "\"foo\"",
-                .errors = &errors,
+                .diagnostics = &diagnostics,
             }),
         );
         try std.testing.expectFmt(
             \\input.zon:1:1: error: expected type 'f32'
             \\
-        , "{f}", .{errors.fmt("input.zon")});
+        , "{f}", .{diagnostics.fmt("input.zon")});
     }
 }
 
@@ -3752,7 +3752,7 @@ test "std.zon free on error" {
     var arena_allocator: ArenaAllocator = .init(gpa);
     defer arena_allocator.deinit();
     const arena = arena_allocator.allocator();
-    var errors: Errors = .empty;
+    var diagnostics: Diagnostics = .empty;
 
     // Test freeing partially allocated structs
     {
@@ -3771,7 +3771,7 @@ test "std.zon free on error" {
             \\    .z = "fail",
             \\}
             ,
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         }));
     }
 
@@ -3792,7 +3792,7 @@ test "std.zon free on error" {
             \\    "fail",
             \\}
             ,
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         }));
     }
 
@@ -3809,7 +3809,7 @@ test "std.zon free on error" {
         \\    .x = "hello",
         \\}
         ,
-        .errors = &errors,
+        .diagnostics = &diagnostics,
     }));
 
     // Test freeing partially allocated arrays
@@ -3823,7 +3823,7 @@ test "std.zon free on error" {
         \\    false,
         \\}
         ,
-        .errors = &errors,
+        .diagnostics = &diagnostics,
     }));
 
     // Test freeing partially allocated slices
@@ -3837,7 +3837,7 @@ test "std.zon free on error" {
         \\    false,
         \\}
         ,
-        .errors = &errors,
+        .diagnostics = &diagnostics,
     }));
 
     // We can parse types that can't be freed, as long as they contain no allocations, e.g. untagged
@@ -3848,7 +3848,7 @@ test "std.zon free on error" {
             .gpa = gpa,
             .arena = arena,
             .source = ".{ .x = 1.5 }",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         })).x,
     );
 
@@ -3859,7 +3859,7 @@ test "std.zon free on error" {
             .gpa = gpa,
             .arena = arena,
             .source = ".{ .x = \"foo\" }",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         });
         try std.testing.expectEqualStrings("foo", result.x);
     }
@@ -3873,7 +3873,7 @@ test "std.zon vector" {
     var arena_allocator: ArenaAllocator = .init(gpa);
     defer arena_allocator.deinit();
     const arena = arena_allocator.allocator();
-    var errors: Errors = .empty;
+    var diagnostics: Diagnostics = .empty;
 
     // Passing cases
     try std.testing.expectEqual(
@@ -3882,7 +3882,7 @@ test "std.zon vector" {
             .gpa = gpa,
             .arena = arena,
             .source = ".{}",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         }),
     );
     try std.testing.expectEqual(
@@ -3891,7 +3891,7 @@ test "std.zon vector" {
             .gpa = gpa,
             .arena = arena,
             .source = ".{true, false, true}",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         }),
     );
 
@@ -3901,7 +3901,7 @@ test "std.zon vector" {
             .gpa = gpa,
             .arena = arena,
             .source = ".{}",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         }),
     );
     try std.testing.expectEqual(
@@ -3910,7 +3910,7 @@ test "std.zon vector" {
             .gpa = gpa,
             .arena = arena,
             .source = ".{1.5, 2.5, 3.5}",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         }),
     );
 
@@ -3920,7 +3920,7 @@ test "std.zon vector" {
             .gpa = gpa,
             .arena = arena,
             .source = ".{}",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         }),
     );
     try std.testing.expectEqual(
@@ -3929,7 +3929,7 @@ test "std.zon vector" {
             .gpa = gpa,
             .arena = arena,
             .source = ".{2, 4, 6}",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         }),
     );
 
@@ -3940,14 +3940,14 @@ test "std.zon vector" {
                 .gpa = gpa,
                 .arena = arena,
                 .source = ".{}",
-                .errors = &errors,
+                .diagnostics = &diagnostics,
             }),
         );
         const pointers = try fromSlice(@Vector(3, *const u8), .{
             .gpa = gpa,
             .arena = arena,
             .source = ".{2, 4, 6}",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         });
         try std.testing.expectEqualDeep(@Vector(3, *const u8){ &2, &4, &6 }, pointers);
     }
@@ -3959,14 +3959,14 @@ test "std.zon vector" {
                 .gpa = gpa,
                 .arena = arena,
                 .source = ".{}",
-                .errors = &errors,
+                .diagnostics = &diagnostics,
             }),
         );
         const pointers = try fromSlice(@Vector(3, ?*const u8), .{
             .gpa = gpa,
             .arena = arena,
             .source = ".{2, null, 6}",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         });
         try std.testing.expectEqualDeep(@Vector(3, ?*const u8){ &2, null, &6 }, pointers);
     }
@@ -3979,13 +3979,13 @@ test "std.zon vector" {
                 .gpa = gpa,
                 .arena = arena,
                 .source = ".{0.5}",
-                .errors = &errors,
+                .diagnostics = &diagnostics,
             }),
         );
         try std.testing.expectFmt(
             \\input.zon:1:2: error: expected 2 array elements; found 1
             \\
-        , "{f}", .{errors.fmt("input.zon")});
+        , "{f}", .{diagnostics.fmt("input.zon")});
     }
 
     // Too many fields
@@ -3996,13 +3996,13 @@ test "std.zon vector" {
                 .gpa = gpa,
                 .arena = arena,
                 .source = ".{0.5, 1.5, 2.5}",
-                .errors = &errors,
+                .diagnostics = &diagnostics,
             }),
         );
         try std.testing.expectFmt(
             \\input.zon:1:13: error: index 2 outside of array of length 2
             \\
-        , "{f}", .{errors.fmt("input.zon")});
+        , "{f}", .{diagnostics.fmt("input.zon")});
     }
 
     // Wrong type fields
@@ -4013,13 +4013,13 @@ test "std.zon vector" {
                 .gpa = gpa,
                 .arena = arena,
                 .source = ".{0.5, true, 2.5}",
-                .errors = &errors,
+                .diagnostics = &diagnostics,
             }),
         );
         try std.testing.expectFmt(
             \\input.zon:1:8: error: expected type 'f32'
             \\
-        , "{f}", .{errors.fmt("input.zon")});
+        , "{f}", .{diagnostics.fmt("input.zon")});
     }
 
     // Wrong type
@@ -4030,13 +4030,13 @@ test "std.zon vector" {
                 .gpa = gpa,
                 .arena = arena,
                 .source = "true",
-                .errors = &errors,
+                .diagnostics = &diagnostics,
             }),
         );
         try std.testing.expectFmt(
             \\input.zon:1:1: error: expected type '@Vector(3, u8)'
             \\
-        , "{f}", .{errors.fmt("input.zon")});
+        , "{f}", .{diagnostics.fmt("input.zon")});
     }
 
     // Elements should get freed on error
@@ -4047,13 +4047,13 @@ test "std.zon vector" {
                 .gpa = gpa,
                 .arena = arena,
                 .source = ".{1, true, 3}",
-                .errors = &errors,
+                .diagnostics = &diagnostics,
             }),
         );
         try std.testing.expectFmt(
             \\input.zon:1:6: error: expected type 'u8'
             \\
-        , "{f}", .{errors.fmt("input.zon")});
+        , "{f}", .{diagnostics.fmt("input.zon")});
     }
 }
 
@@ -4062,7 +4062,7 @@ test "std.zon add pointers" {
     var arena_allocator: ArenaAllocator = .init(gpa);
     defer arena_allocator.deinit();
     const arena = arena_allocator.allocator();
-    var errors: Errors = .empty;
+    var diagnostics: Diagnostics = .empty;
 
     // Primitive with varying levels of pointers
     {
@@ -4070,7 +4070,7 @@ test "std.zon add pointers" {
             .gpa = gpa,
             .arena = arena,
             .source = "10",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         });
         try std.testing.expectEqual(@as(u32, 10), result.*);
     }
@@ -4080,7 +4080,7 @@ test "std.zon add pointers" {
             .gpa = gpa,
             .arena = arena,
             .source = "10",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         });
         try std.testing.expectEqual(@as(u32, 10), result.*.*);
     }
@@ -4090,7 +4090,7 @@ test "std.zon add pointers" {
             .gpa = gpa,
             .arena = arena,
             .source = "10",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         });
         try std.testing.expectEqual(@as(u32, 10), result.*.*.*);
     }
@@ -4101,7 +4101,7 @@ test "std.zon add pointers" {
             .gpa = gpa,
             .arena = arena,
             .source = "10",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         });
         try std.testing.expectEqual(@as(u32, 10), some.?.*);
 
@@ -4109,7 +4109,7 @@ test "std.zon add pointers" {
             .gpa = gpa,
             .arena = arena,
             .source = "null",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         });
         try std.testing.expectEqual(null, none);
     }
@@ -4119,7 +4119,7 @@ test "std.zon add pointers" {
             .gpa = gpa,
             .arena = arena,
             .source = "10",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         });
         try std.testing.expectEqual(@as(u32, 10), some.*.?);
 
@@ -4127,7 +4127,7 @@ test "std.zon add pointers" {
             .gpa = gpa,
             .arena = arena,
             .source = "null",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         });
         try std.testing.expectEqual(null, none.*);
     }
@@ -4137,7 +4137,7 @@ test "std.zon add pointers" {
             .gpa = gpa,
             .arena = arena,
             .source = "10",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         });
         try std.testing.expectEqual(@as(u32, 10), some.?.*.*);
 
@@ -4145,7 +4145,7 @@ test "std.zon add pointers" {
             .gpa = gpa,
             .arena = arena,
             .source = "null",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         });
         try std.testing.expectEqual(null, none);
     }
@@ -4155,7 +4155,7 @@ test "std.zon add pointers" {
             .gpa = gpa,
             .arena = arena,
             .source = "10",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         });
         try std.testing.expectEqual(@as(u32, 10), some.*.?.*);
 
@@ -4163,7 +4163,7 @@ test "std.zon add pointers" {
             .gpa = gpa,
             .arena = arena,
             .source = "null",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         });
         try std.testing.expectEqual(null, none.*);
     }
@@ -4173,7 +4173,7 @@ test "std.zon add pointers" {
             .gpa = gpa,
             .arena = arena,
             .source = "10",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         });
         try std.testing.expectEqual(@as(u32, 10), some.*.*.?);
 
@@ -4181,7 +4181,7 @@ test "std.zon add pointers" {
             .gpa = gpa,
             .arena = arena,
             .source = "null",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         });
         try std.testing.expectEqual(null, none.*.*);
     }
@@ -4192,7 +4192,7 @@ test "std.zon add pointers" {
             .gpa = gpa,
             .arena = arena,
             .source = ".{ 1, 2, 3 }",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         });
         try std.testing.expectEqual([3]u8{ 1, 2, 3 }, result.*);
     }
@@ -4227,7 +4227,7 @@ test "std.zon add pointers" {
             \\    .f2 = null,
             \\}
             ,
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         });
 
         try std.testing.expectEqualDeep(expected, found.?.*);
@@ -4241,13 +4241,13 @@ test "std.zon add pointers" {
                 .gpa = gpa,
                 .arena = arena,
                 .source = "true",
-                .errors = &errors,
+                .diagnostics = &diagnostics,
             }),
         );
         try std.testing.expectFmt(
             \\input.zon:1:1: error: expected type '?u8'
             \\
-        , "{f}", .{errors.fmt("input.zon")});
+        , "{f}", .{diagnostics.fmt("input.zon")});
     }
 
     {
@@ -4257,13 +4257,13 @@ test "std.zon add pointers" {
                 .gpa = gpa,
                 .arena = arena,
                 .source = "true",
-                .errors = &errors,
+                .diagnostics = &diagnostics,
             }),
         );
         try std.testing.expectFmt(
             \\input.zon:1:1: error: expected type '?f32'
             \\
-        , "{f}", .{errors.fmt("input.zon")});
+        , "{f}", .{diagnostics.fmt("input.zon")});
     }
 
     {
@@ -4273,13 +4273,13 @@ test "std.zon add pointers" {
                 .gpa = gpa,
                 .arena = arena,
                 .source = "true",
-                .errors = &errors,
+                .diagnostics = &diagnostics,
             }),
         );
         try std.testing.expectFmt(
             \\input.zon:1:1: error: expected type '?@Vector(3, u8)'
             \\
-        , "{f}", .{errors.fmt("input.zon")});
+        , "{f}", .{diagnostics.fmt("input.zon")});
     }
 
     {
@@ -4289,13 +4289,13 @@ test "std.zon add pointers" {
                 .gpa = gpa,
                 .arena = arena,
                 .source = "10",
-                .errors = &errors,
+                .diagnostics = &diagnostics,
             }),
         );
         try std.testing.expectFmt(
             \\input.zon:1:1: error: expected type '?bool'
             \\
-        , "{f}", .{errors.fmt("input.zon")});
+        , "{f}", .{diagnostics.fmt("input.zon")});
     }
 
     {
@@ -4305,13 +4305,13 @@ test "std.zon add pointers" {
                 .gpa = gpa,
                 .arena = arena,
                 .source = "true",
-                .errors = &errors,
+                .diagnostics = &diagnostics,
             }),
         );
         try std.testing.expectFmt(
             \\input.zon:1:1: error: expected optional struct
             \\
-        , "{f}", .{errors.fmt("input.zon")});
+        , "{f}", .{diagnostics.fmt("input.zon")});
     }
 
     {
@@ -4321,13 +4321,13 @@ test "std.zon add pointers" {
                 .gpa = gpa,
                 .arena = arena,
                 .source = "true",
-                .errors = &errors,
+                .diagnostics = &diagnostics,
             }),
         );
         try std.testing.expectFmt(
             \\input.zon:1:1: error: expected optional tuple
             \\
-        , "{f}", .{errors.fmt("input.zon")});
+        , "{f}", .{diagnostics.fmt("input.zon")});
     }
 
     {
@@ -4337,13 +4337,13 @@ test "std.zon add pointers" {
                 .gpa = gpa,
                 .arena = arena,
                 .source = "true",
-                .errors = &errors,
+                .diagnostics = &diagnostics,
             }),
         );
         try std.testing.expectFmt(
             \\input.zon:1:1: error: expected optional union
             \\
-        , "{f}", .{errors.fmt("input.zon")});
+        , "{f}", .{diagnostics.fmt("input.zon")});
     }
 
     {
@@ -4353,13 +4353,13 @@ test "std.zon add pointers" {
                 .gpa = gpa,
                 .arena = arena,
                 .source = "true",
-                .errors = &errors,
+                .diagnostics = &diagnostics,
             }),
         );
         try std.testing.expectFmt(
             \\input.zon:1:1: error: expected optional array
             \\
-        , "{f}", .{errors.fmt("input.zon")});
+        , "{f}", .{diagnostics.fmt("input.zon")});
     }
 
     {
@@ -4369,13 +4369,13 @@ test "std.zon add pointers" {
                 .gpa = gpa,
                 .arena = arena,
                 .source = "true",
-                .errors = &errors,
+                .diagnostics = &diagnostics,
             }),
         );
         try std.testing.expectFmt(
             \\input.zon:1:1: error: expected optional array
             \\
-        , "{f}", .{errors.fmt("input.zon")});
+        , "{f}", .{diagnostics.fmt("input.zon")});
     }
 
     {
@@ -4385,13 +4385,13 @@ test "std.zon add pointers" {
                 .gpa = gpa,
                 .arena = arena,
                 .source = "true",
-                .errors = &errors,
+                .diagnostics = &diagnostics,
             }),
         );
         try std.testing.expectFmt(
             \\input.zon:1:1: error: expected optional array
             \\
-        , "{f}", .{errors.fmt("input.zon")});
+        , "{f}", .{diagnostics.fmt("input.zon")});
     }
 
     {
@@ -4401,13 +4401,13 @@ test "std.zon add pointers" {
                 .gpa = gpa,
                 .arena = arena,
                 .source = "true",
-                .errors = &errors,
+                .diagnostics = &diagnostics,
             }),
         );
         try std.testing.expectFmt(
             \\input.zon:1:1: error: expected optional array
             \\
-        , "{f}", .{errors.fmt("input.zon")});
+        , "{f}", .{diagnostics.fmt("input.zon")});
     }
 
     {
@@ -4417,13 +4417,13 @@ test "std.zon add pointers" {
                 .gpa = gpa,
                 .arena = arena,
                 .source = "true",
-                .errors = &errors,
+                .diagnostics = &diagnostics,
             }),
         );
         try std.testing.expectFmt(
             \\input.zon:1:1: error: expected optional string
             \\
-        , "{f}", .{errors.fmt("input.zon")});
+        , "{f}", .{diagnostics.fmt("input.zon")});
     }
 
     {
@@ -4433,13 +4433,13 @@ test "std.zon add pointers" {
                 .gpa = gpa,
                 .arena = arena,
                 .source = "true",
-                .errors = &errors,
+                .diagnostics = &diagnostics,
             }),
         );
         try std.testing.expectFmt(
             \\input.zon:1:1: error: expected optional enum literal
             \\
-        , "{f}", .{errors.fmt("input.zon")});
+        , "{f}", .{diagnostics.fmt("input.zon")});
     }
 }
 
@@ -4448,7 +4448,7 @@ test "std.zon stop on node" {
     var arena_allocator: ArenaAllocator = .init(gpa);
     defer arena_allocator.deinit();
     const arena = arena_allocator.allocator();
-    var errors: Errors = .empty;
+    var diagnostics: Diagnostics = .empty;
 
     {
         const Vec2 = struct {
@@ -4466,7 +4466,7 @@ test "std.zon stop on node" {
             .arena = arena,
             .ast = &ast,
             .zoir = &zoir,
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         });
 
         try std.testing.expectEqual(result.y, 2.5);
@@ -4484,7 +4484,7 @@ test "std.zon stop on node" {
             .arena = arena,
             .ast = &ast,
             .zoir = &zoir,
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         });
         try std.testing.expectEqual(Zoir.Node{ .float_literal = 1.23 }, result.get(&zoir));
     }
@@ -4495,7 +4495,7 @@ test "std.zon no alloc" {
     var arena_allocator: ArenaAllocator = .init(gpa);
     defer arena_allocator.deinit();
     const arena = arena_allocator.allocator();
-    var errors: Errors = .empty;
+    var diagnostics: Diagnostics = .empty;
 
     try std.testing.expectEqual(
         [3]u8{ 1, 2, 3 },
@@ -4503,7 +4503,7 @@ test "std.zon no alloc" {
             .gpa = gpa,
             .arena = arena,
             .source = ".{ 1, 2, 3 }",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         }),
     );
 
@@ -4521,56 +4521,9 @@ test "std.zon no alloc" {
             .arena = arena,
             .ast = &ast,
             .zoir = &zoir,
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         }),
     );
-}
-
-test "std.zon errors without errorsnostics" {
-    const gpa = std.testing.allocator;
-    var arena_allocator: ArenaAllocator = .init(gpa);
-    defer arena_allocator.deinit();
-    const arena = arena_allocator.allocator();
-    var errors: Errors = .empty;
-
-    const Enum = enum {
-        foo,
-        bar,
-        baz,
-    };
-    try std.testing.expectError(error.ParseZon, fromSlice(Enum, .{
-        .gpa = gpa,
-        .arena = arena,
-        .source = ".nothing",
-        .errors = &errors,
-    }));
-
-    const Struct = struct {
-        name: []const u8,
-    };
-    try std.testing.expectError(error.ParseZon, fromSlice(Struct, .{
-        .gpa = gpa,
-        .arena = arena,
-        .source = ".{ .name = \"Alice\", .age = 25 }",
-        .errors = &errors,
-    }));
-
-    const Union = union(enum) {
-        x,
-        y: u32,
-    };
-    try std.testing.expectError(error.ParseZon, fromSlice(Union, .{
-        .gpa = gpa,
-        .arena = arena,
-        .source = ".a",
-        .errors = &errors,
-    }));
-    try std.testing.expectError(error.ParseZon, fromSlice(Union, .{
-        .gpa = gpa,
-        .arena = arena,
-        .source = ".{ .b = 8 }",
-        .errors = &errors,
-    }));
 }
 
 test "std.zon aligned pointers" {
@@ -4578,7 +4531,7 @@ test "std.zon aligned pointers" {
     var arena_allocator: ArenaAllocator = .init(gpa);
     defer arena_allocator.deinit();
     const arena = arena_allocator.allocator();
-    var errors: Errors = .empty;
+    var diagnostics: Diagnostics = .empty;
 
     const n: u8 align(8) = 10;
     const Foo = struct {
@@ -4592,7 +4545,7 @@ test "std.zon aligned pointers" {
         .gpa = gpa,
         .arena = arena,
         .source = ".{ .inner = 10 }",
-        .errors = &errors,
+        .diagnostics = &diagnostics,
     });
     try std.testing.expectEqualDeep(expected.inner, found.inner);
 }
@@ -4602,7 +4555,7 @@ test "std.zon update basic" {
     var arena_allocator: ArenaAllocator = .init(gpa);
     defer arena_allocator.deinit();
     const arena = arena_allocator.allocator();
-    var errors: Errors = .empty;
+    var diagnostics: Diagnostics = .empty;
 
     const Vector = struct { x: f32, y: f32, z: f32 };
     const MyStruct = struct {
@@ -4638,7 +4591,7 @@ test "std.zon update basic" {
         .gpa = gpa,
         .arena = arena,
         .source = ".{}",
-        .errors = &errors,
+        .diagnostics = &diagnostics,
     });
     try std.testing.expectEqualDeep(expected, found);
 
@@ -4646,7 +4599,7 @@ test "std.zon update basic" {
         .gpa = gpa,
         .arena = arena,
         .source = ".{ .bar = false }",
-        .errors = &errors,
+        .diagnostics = &diagnostics,
     });
     expected.bar = false;
     try std.testing.expectEqualDeep(expected, found);
@@ -4655,7 +4608,7 @@ test "std.zon update basic" {
         .gpa = gpa,
         .arena = arena,
         .source = ".{ .baz = .{ .a = .{ 2, 4 } } }",
-        .errors = &errors,
+        .diagnostics = &diagnostics,
     });
     expected.baz.a[0] = 2;
     expected.baz.a[1] = 4;
@@ -4665,7 +4618,7 @@ test "std.zon update basic" {
         .gpa = gpa,
         .arena = arena,
         .source = ".{ .foo = 11, .baz = .{ .b = .d } }",
-        .errors = &errors,
+        .diagnostics = &diagnostics,
     });
     expected.foo = 11;
     expected.baz.b = .d;
@@ -4675,7 +4628,7 @@ test "std.zon update basic" {
         .gpa = gpa,
         .arena = arena,
         .source = ".{ .optional = 10 }",
-        .errors = &errors,
+        .diagnostics = &diagnostics,
     });
     expected.optional = 10;
     try std.testing.expectEqualDeep(expected, found);
@@ -4684,7 +4637,7 @@ test "std.zon update basic" {
         .gpa = gpa,
         .arena = arena,
         .source = ".{ .optional = null }",
-        .errors = &errors,
+        .diagnostics = &diagnostics,
     });
     expected.optional = null;
     try std.testing.expectEqualDeep(expected, found);
@@ -4693,7 +4646,7 @@ test "std.zon update basic" {
         .gpa = gpa,
         .arena = arena,
         .source = ".{ .ptr = .{ .x = 10, .y = 20, .z = 30 } }",
-        .errors = &errors,
+        .diagnostics = &diagnostics,
     });
     expected.ptr.x = 10;
     expected.ptr.y = 20;
@@ -4704,7 +4657,7 @@ test "std.zon update basic" {
         .gpa = gpa,
         .arena = arena,
         .source = ".{ .str = \"foo\" }",
-        .errors = &errors,
+        .diagnostics = &diagnostics,
     });
     expected.str = "foo";
     try std.testing.expectEqualDeep(expected, found);
@@ -4715,7 +4668,7 @@ test "std.zon update optionals" {
     var arena_allocator: ArenaAllocator = .init(gpa);
     defer arena_allocator.deinit();
     const arena = arena_allocator.allocator();
-    var errors: Errors = .empty;
+    var diagnostics: Diagnostics = .empty;
 
     const MyStruct = struct {
         foo: ?struct { bar: u32 = 1, baz: u32 = 2, qux: u32 },
@@ -4729,7 +4682,7 @@ test "std.zon update optionals" {
             .gpa = gpa,
             .arena = arena,
             .source = ".{ .foo = .{ .qux = 3 } }",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         });
         expected.foo = .{ .qux = 3 };
         try std.testing.expectEqual(expected, found);
@@ -4742,12 +4695,12 @@ test "std.zon update optionals" {
             .gpa = gpa,
             .arena = arena,
             .source = ".{ .foo = .{} }",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         }));
         try std.testing.expectFmt(
             \\input.zon:1:12: error: missing required field qux
             \\
-        , "{f}", .{errors.fmt("input.zon")});
+        , "{f}", .{diagnostics.fmt("input.zon")});
     }
 
     // Updating an optional that starts out non-null should preserve any values we leave off. It's
@@ -4761,7 +4714,7 @@ test "std.zon update optionals" {
             .gpa = gpa,
             .arena = arena,
             .source = ".{ .foo = .{ .baz = 200 } }",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         });
         expected.foo.?.baz = 200;
         try std.testing.expectEqual(expected, found);
@@ -4773,7 +4726,7 @@ test "std.zon update optional pointers" {
     var arena_allocator: ArenaAllocator = .init(gpa);
     defer arena_allocator.deinit();
     const arena = arena_allocator.allocator();
-    var errors: Errors = .empty;
+    var diagnostics: Diagnostics = .empty;
 
     const MyStruct = struct {
         foo: ?*const struct { bar: u32 = 1, baz: u32 = 2, qux: u32 },
@@ -4787,7 +4740,7 @@ test "std.zon update optional pointers" {
             .gpa = gpa,
             .arena = arena,
             .source = ".{ .foo = .{ .qux = 3 } }",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         });
         expected.foo = &.{ .qux = 3 };
         try std.testing.expectEqualDeep(expected, found);
@@ -4799,7 +4752,7 @@ test "std.zon update pointers" {
     var arena_allocator: ArenaAllocator = .init(gpa);
     defer arena_allocator.deinit();
     const arena = arena_allocator.allocator();
-    var errors: Errors = .empty;
+    var diagnostics: Diagnostics = .empty;
 
     // Updating a pointer should leave fields we don't specify unchanged
     {
@@ -4813,7 +4766,7 @@ test "std.zon update pointers" {
             .gpa = gpa,
             .arena = arena,
             .source = ".{ .foo = .{ .bar = 100 } }",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         });
         expected.foo.bar = 100;
         try std.testing.expectEqualDeep(expected, found);
@@ -4830,7 +4783,7 @@ test "std.zon update pointers" {
             .gpa = gpa,
             .arena = arena,
             .source = ".{ .foo = .{ .bar = 100 } }",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         });
         expected.foo = &.{ .bar = 100, .baz = 20, .qux = 3 };
         try std.testing.expectEqualDeep(expected, found);
@@ -4842,7 +4795,7 @@ test "std.zon update unions" {
     var arena_allocator: ArenaAllocator = .init(gpa);
     defer arena_allocator.deinit();
     const arena = arena_allocator.allocator();
-    var errors: Errors = .empty;
+    var diagnostics: Diagnostics = .empty;
 
     const MyUnion = union(enum) {
         none: void,
@@ -4857,7 +4810,7 @@ test "std.zon update unions" {
             .gpa = gpa,
             .arena = arena,
             .source = ".{ .foo = .{ .qux = 3 } }",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         });
         expected = .{ .foo = .{ .qux = 3 } };
         try std.testing.expectEqual(expected, found);
@@ -4870,12 +4823,12 @@ test "std.zon update unions" {
             .gpa = gpa,
             .arena = arena,
             .source = ".{ .foo = .{} }",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         }));
         try std.testing.expectFmt(
             \\input.zon:1:12: error: missing required field qux
             \\
-        , "{f}", .{errors.fmt("input.zon")});
+        , "{f}", .{diagnostics.fmt("input.zon")});
     }
 
     // Updating a union should preseve any sub-fields that we left off. It's also okay to leave off
@@ -4889,7 +4842,7 @@ test "std.zon update unions" {
             .gpa = gpa,
             .arena = arena,
             .source = ".{ .foo = .{ .baz = 200 } }",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         });
         expected.foo.baz = 200;
         try std.testing.expectEqual(expected, found);
@@ -4904,7 +4857,7 @@ test "std.zon variants" {
     var arena_allocator: ArenaAllocator = .init(gpa);
     defer arena_allocator.deinit();
     const arena = arena_allocator.allocator();
-    var errors: Errors = .empty;
+    var diagnostics: Diagnostics = .empty;
 
     const Struct = struct { a: u32, b: u32 };
     const start: Struct = .{ .a = 10, .b = 20 };
@@ -4922,7 +4875,7 @@ test "std.zon variants" {
             .gpa = gpa,
             .arena = arena,
             .source = ".{ .a = 100 }",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         });
         try std.testing.expectEqual(end, curr);
 
@@ -4931,7 +4884,7 @@ test "std.zon variants" {
             .gpa = gpa,
             .arena = arena,
             .source = ".{ .a = 100 }",
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         });
         try std.testing.expectEqual(end, curr);
 
@@ -4940,7 +4893,7 @@ test "std.zon variants" {
             .arena = arena,
             .ast = &ast,
             .zoir = &zoir,
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         });
         try std.testing.expectEqual(end, curr);
 
@@ -4949,7 +4902,7 @@ test "std.zon variants" {
             .arena = arena,
             .ast = &ast,
             .zoir = &zoir,
-            .errors = &errors,
+            .diagnostics = &diagnostics,
         });
         try std.testing.expectEqual(end, curr);
     }
@@ -4967,7 +4920,7 @@ test "std.zon variants" {
                 .gpa = gpa,
                 .arena = arena,
                 .source = ".{ .a = 100, .b = 20 }",
-                .errors = &errors,
+                .diagnostics = &diagnostics,
             }),
         );
         try std.testing.expectEqual(
@@ -4976,7 +4929,7 @@ test "std.zon variants" {
                 .gpa = gpa,
                 .arena = arena,
                 .source = ".{ .a = 100, .b = 20 }",
-                .errors = &errors,
+                .diagnostics = &diagnostics,
             }),
         );
         try std.testing.expectEqual(
@@ -4984,7 +4937,7 @@ test "std.zon variants" {
                 .arena = arena,
                 .ast = &ast,
                 .zoir = &zoir,
-                .errors = &errors,
+                .diagnostics = &diagnostics,
             }),
             end,
         );
@@ -4993,7 +4946,7 @@ test "std.zon variants" {
                 .arena = arena,
                 .ast = &ast,
                 .zoir = &zoir,
-                .errors = &errors,
+                .diagnostics = &diagnostics,
             }),
             end,
         );
@@ -5001,5 +4954,5 @@ test "std.zon variants" {
 }
 
 test {
-    _ = Errors;
+    _ = Diagnostics;
 }
