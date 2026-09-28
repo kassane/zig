@@ -26,6 +26,10 @@ const crypto = std.crypto;
 const mem = std.mem;
 const assert = std.debug.assert;
 const AuthenticationError = crypto.errors.AuthenticationError;
+const bitsliced = @import("aegis/bitsliced.zig");
+
+const use_bitsliced = !crypto.core.aes.has_hardware_support and
+    std.options.side_channels_mitigations != .none;
 
 /// AEGIS-128X4 with a 128 bit tag
 pub const Aegis128X4 = Aegis128XGeneric(4, 128);
@@ -276,7 +280,7 @@ fn Aegis128XGeneric(comptime degree: u7, comptime tag_bits: u9) type {
     comptime assert(tag_bits == 128 or tag_bits == 256); // tag must be 128 or 256 bits
 
     return struct {
-        const State = State128X(degree);
+        const State = if (use_bitsliced) bitsliced.State128X(degree) else State128X(degree);
 
         pub const tag_length = tag_bits / 8;
         pub const nonce_length = 16;
@@ -571,7 +575,7 @@ fn Aegis256XGeneric(comptime degree: u7, comptime tag_bits: u9) type {
     comptime assert(tag_bits == 128 or tag_bits == 256); // tag must be 128 or 256 bits
 
     return struct {
-        const State = State256X(degree);
+        const State = if (use_bitsliced) bitsliced.State256X(degree) else State256X(degree);
 
         pub const tag_length = tag_bits / 8;
         pub const nonce_length = 32;
