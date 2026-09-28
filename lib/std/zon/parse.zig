@@ -94,12 +94,8 @@ pub const Error = struct {
 /// Errors encountered while parsing ZON. See `log` and `fatal` for reporting errors to the user.
 pub const Errors = struct {
     items: []const Error,
-    oom: bool,
 
-    pub const empty: Errors = .{
-        .items = &.{},
-        .oom = false,
-    };
+    pub const empty: Errors = .{ .items = &.{} };
 
     /// Log the failure with `std.log.err`.
     pub fn log(self: *const Errors, path: []const u8) void {
@@ -123,9 +119,12 @@ pub const Errors = struct {
             .arena = arena,
             .source = ".{ .foo = 1, .bar = 2 }",
             .errors = &errors,
-        }) catch b: {
-            errors.log("input.zon");
-            break :b .{ .foo = 0, .bar = 0 };
+        }) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            error.ParseZon => b: {
+                errors.log("input.zon");
+                break :b .{ .foo = 0, .bar = 0 };
+            },
         };
         _ = parsed;
     }
@@ -152,14 +151,16 @@ pub const Errors = struct {
             .arena = arena,
             .source = ".{ .foo = 1, .bar = 2 }",
             .errors = &errors,
-        }) catch errors.fatal("input.zon");
+        }) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            error.ParseZon => errors.fatal("input.zon"),
+        };
         _ = parsed;
     }
 
     pub fn fmt(self: *const Errors, path: []const u8) Formatter {
         return .{
             .items = self.items,
-            .oom = self.oom,
             .path = path,
         };
     }
@@ -167,12 +168,8 @@ pub const Errors = struct {
     pub const Formatter = struct {
         path: []const u8,
         items: []const Error,
-        oom: bool,
 
         pub fn format(self: *const @This(), w: *std.Io.Writer) std.Io.Writer.Error!void {
-            if (self.oom) {
-                try w.print("{s}: out of memory", .{self.path});
-            }
             for (self.items) |e| {
                 try w.print("{s}:", .{self.path});
                 try w.print("{d}:{d}: error: {s}\n", .{
@@ -192,11 +189,6 @@ pub const Errors = struct {
             }
         }
     };
-
-    fn checkOom(self: *Errors, result: anytype) @TypeOf(result) {
-        self.oom |= result == error.OutOfMemory;
-        return result;
-    }
 };
 
 pub const Options = struct {
@@ -246,9 +238,12 @@ test fromSlice {
         .arena = arena,
         .source = source,
         .errors = &errors,
-    }) catch |err| {
-        errors.log("texture_options.zon");
-        return err;
+    }) catch |err| switch (err) {
+        error.OutOfMemory => return err,
+        error.ParseZon => {
+            errors.log("texture_options.zon");
+            return err;
+        },
     };
 
     try std.testing.expectEqualDeep(TextureOptions{
@@ -318,18 +313,24 @@ test updateFromSlice {
         .arena = arena,
         .source = global_config,
         .errors = &errors,
-    }) catch |err| {
-        errors.log("global_config.zon");
-        return err;
+    }) catch |err| switch (err) {
+        error.OutOfMemory => return err,
+        error.ParseZon => {
+            errors.log("global_config.zon");
+            return err;
+        },
     };
     updateFromSlice(MyTextEditorConfig, &config, .{
         .gpa = gpa,
         .arena = arena,
         .source = project_config,
         .errors = &errors,
-    }) catch |err| {
-        errors.log("project_config.zon");
-        return err;
+    }) catch |err| switch (err) {
+        error.OutOfMemory => return err,
+        error.ParseZon => {
+            errors.log("project_config.zon");
+            return err;
+        },
     };
 
     try std.testing.expectEqualDeep(MyTextEditorConfig{
@@ -357,32 +358,23 @@ fn fromSliceInner(
     initialized: bool,
     options: Options,
 ) error{ OutOfMemory, ParseZon }!void {
-    options.errors.oom = false;
     var errors: std.ArrayList(Error) = .empty;
     defer options.errors.items = errors.items;
 
-    var ast = try options.errors.checkOom(std.zig.Ast.parse(
-        options.gpa,
-        options.source,
-        .{ .mode = .zon },
-    ));
+    var ast = try std.zig.Ast.parse(options.gpa, options.source, .{ .mode = .zon });
     defer ast.deinit(options.gpa);
 
-    var zoir = try options.errors.checkOom(ZonGen.generate(
-        options.gpa,
-        ast,
-        .{ .parse_str_lits = false },
-    ));
+    var zoir = try ZonGen.generate(options.gpa, ast, .{ .parse_str_lits = false });
     defer zoir.deinit(options.gpa);
 
-    try options.errors.checkOom(inner(T, value, initialized, .{
+    try inner(T, value, initialized, .{
         .arena = options.arena,
         .ast = &ast,
         .zoir = &zoir,
         .node = .root,
         .errors = &errors,
         .ignore_unknown_fields = options.ignore_unknown_fields,
-    }));
+    });
 }
 
 pub const FromZoirOptions = struct {
@@ -439,16 +431,15 @@ fn fromZoirInner(
     initialized: bool,
     options: FromZoirOptions,
 ) error{ OutOfMemory, ParseZon }!void {
-    options.errors.oom = false;
     var errors: std.ArrayList(Error) = .empty;
     defer options.errors.items = errors.items;
-    return options.errors.checkOom(inner(T, value, initialized, .{
+    return inner(T, value, initialized, .{
         .arena = options.arena,
         .ast = options.ast,
         .zoir = options.zoir,
         .errors = &errors,
         .ignore_unknown_fields = options.ignore_unknown_fields,
-    }));
+    });
 }
 
 const InnerOptions = struct {
@@ -1450,38 +1441,17 @@ test "std.zon failure/oom formatting" {
     var arena_allocator: ArenaAllocator = .init(gpa);
     defer arena_allocator.deinit();
     const arena = arena_allocator.allocator();
+    var errors: Errors = .empty;
 
-    {
-        var errors: Errors = .empty;
-        try std.testing.expectError(error.OutOfMemory, fromSlice([]const u8, .{
-            .gpa = .failing,
-            .arena = arena,
-            .source = "\"foo\"",
-            .errors = &errors,
-        }));
-        try std.testing.expectFmt(
-            \\input.zon: out of memory
-        , "{f}", .{errors.fmt("input.zon")});
-    }
-
-    {
-        var ast = try std.zig.Ast.parse(gpa, "\"foo\"", .{ .mode = .zon });
-        defer ast.deinit(gpa);
-
-        var zoir = try ZonGen.generate(gpa, ast, .{ .parse_str_lits = false });
-        defer zoir.deinit(gpa);
-
-        var errors: Errors = .empty;
-        try std.testing.expectError(error.OutOfMemory, fromZoir([]const u8, .{
-            .arena = .failing,
-            .ast = &ast,
-            .zoir = &zoir,
-            .errors = &errors,
-        }));
-        try std.testing.expectFmt(
-            \\input.zon: out of memory
-        , "{f}", .{errors.fmt("input.zon")});
-    }
+    try std.testing.expectError(error.OutOfMemory, fromSlice([]const u8, .{
+        .gpa = .failing,
+        .arena = arena,
+        .source = "\"foo\"",
+        .errors = &errors,
+    }));
+    try std.testing.expectFmt(
+        \\
+    , "{f}", .{errors.fmt("input.zon")});
 }
 
 test "std.zon fromSlice syntax error" {
