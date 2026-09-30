@@ -1104,9 +1104,10 @@ pub const Value = struct {
         ) !bool {
             try vi.reextendToPcs(isel);
             try vi.collectDefs(isel);
+            if (opts.@"volatile")
+                try (try vi.mat(isel, .{})).finish(isel);
             const loc = vi.takeLocationMarkWritten(isel) orelse return false;
             wip_mir_log.debug("  | # load {f} <- [${t}, #{d}] ({d}B)", .{ vi, base_reg, offset, vi.size(isel) });
-            _ = opts;
 
             try isel.moveLoc(
                 loc,
@@ -1277,7 +1278,6 @@ pub const Value = struct {
         }
 
         const MemoryAccessOptions = struct {
-            // TODO unimplemented, remove?
             @"volatile": bool = false,
         };
 
@@ -3971,7 +3971,8 @@ pub fn body(isel: *Select, air_body: []const Air.Inst.Index) codegen.Error!void 
                 const ptr_info = ptr_ty.ptrInfo(zcu);
                 if (ptr_info.packed_offset.host_size > 0) return isel.fail("packed load", .{});
 
-                if (ptr_info.flags.is_volatile) _ = try isel.use(air.inst_index.toRef());
+                if (ptr_info.flags.is_volatile)
+                    _ = try isel.use(air.inst_index.toRef());
                 if (isel.live_values.fetchRemove(air.inst_index)) |dst_vi| {
                     defer dst_vi.value.deref(isel);
 
