@@ -4747,6 +4747,40 @@ pub fn body(isel: *Select, air_body: []const Air.Inst.Index) codegen.Error!void 
                     try error_union_ptr_mat.finish(isel);
                 }
             },
+            .runtime_nav_ptr => if (isel.live_values.fetchRemove(air.inst_index)) |ptr_vi| unused: {
+                defer ptr_vi.value.deref(isel);
+                const ptr_reg = try ptr_vi.value.defRegMod(isel, .integer) orelse break :unused;
+                const ty_nav = air.data(air.inst_index).ty_nav;
+                const target_nav = ip.getNav(ty_nav.nav);
+                const target_nav_resolved = target_nav.resolved.?;
+
+                if (target_nav_resolved.@"threadlocal") {
+                    // TODO: implement TLS models other than LE
+                    try isel.emit(switch (isel.gprBits()) {
+                        32 => .@"add.w"(ptr_reg, ptr_reg, .tp),
+                        64 => .@"add.d"(ptr_reg, ptr_reg, .tp),
+                        else => unreachable,
+                    });
+                    try isel.nav_relocs.append(zcu.gpa, .{
+                        .nav = ty_nav.nav,
+                        .reloc = .{
+                            .label = @intCast(isel.instructions.items.len),
+                            .addend = 0,
+                            .type = .TLS_LE_LO12,
+                        },
+                    });
+                    try isel.emit(.ori(ptr_reg, ptr_reg, 0));
+                    try isel.nav_relocs.append(zcu.gpa, .{
+                        .nav = ty_nav.nav,
+                        .reloc = .{
+                            .label = @intCast(isel.instructions.items.len),
+                            .addend = 0,
+                            .type = .TLS_LE_HI20,
+                        },
+                    });
+                    try isel.emit(.@"lu12i.w"(ptr_reg, 0));
+                } else try isel.failUnimplemented("unimplemented runtime_nav_ptr", .{});
+            },
         }
         if (air_tag != .arg) {
             var live_reg_it = isel.live_registers.iterator();
