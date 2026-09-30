@@ -1308,7 +1308,7 @@ pub const Value = struct {
         };
 
         /// Materializes a value
-        fn mat(vi: Value.Index, isel: *Select, opts: MatOptions) Mat.Error!Mat {
+        fn mat(vi: Value.Index, isel: *Select, opts: MatOptions) codegen.Error!Mat {
             // try vi.split(isel, true);
             const mat_size = @min(opts.size, @as(u32, @intCast(vi.size(isel) - opts.offset)));
             const loc_pref = if (opts.extension == .garbage)
@@ -2046,8 +2046,6 @@ pub const Value = struct {
             if (!std.debug.runtime_safety) assert(@sizeOf(Mat) <= 32);
         }
 
-        const Error = codegen.Error;
-
         pub fn ra(mat: Value.Mat) Register.Alias {
             return mat.location.register;
         }
@@ -2066,7 +2064,7 @@ pub const Value = struct {
             };
         }
 
-        fn finish(mat: Value.Mat, isel: *Select) Mat.Error!void {
+        fn finish(mat: Value.Mat, isel: *Select) codegen.Error!void {
             const vi = mat.vi;
             const value = vi.get(isel);
             tracking_log.debug("{f}[{d}..{d}] <- {f} (mat finish)", .{ vi, mat.offset, mat.offset + mat.size - 1, mat.loc() });
@@ -2315,7 +2313,7 @@ fn failUnimplemented(isel: *Select, comptime format: []const u8, args: anytype) 
     } else return isel.fail(format, args);
 }
 
-fn moveDebugString(isel: *Select, reg: Register, msg: [:0]const u8) error{ OutOfMemory, AlreadyReported }!void {
+fn moveDebugString(isel: *Select, reg: Register, msg: [:0]const u8) codegen.Error!void {
     @branchHint(.cold);
     assert(debug_trap_unimplemented_code);
 
