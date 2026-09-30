@@ -183,6 +183,7 @@ pub fn State128X(comptime degree: u7) type {
 
         const aes_block_length = V.block_length;
         pub const rate = aes_block_length * 2;
+        pub const alignment = @alignOf(Word);
 
         const context_mask = V.contextMask(.{ 3, 7 });
 
@@ -324,6 +325,7 @@ pub fn State256X(comptime degree: u7) type {
         words: Aes.Bitsliced,
 
         pub const rate = V.block_length;
+        pub const alignment = @alignOf(Word);
 
         const context_mask = V.contextMask(.{ 3, 5 });
 
