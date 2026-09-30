@@ -4,6 +4,7 @@ const std = @import("std");
 const Io = std.Io;
 const net = std.Io.net;
 const mem = std.mem;
+const posix = std.posix;
 const testing = std.testing;
 const Allocator = std.mem.Allocator;
 
@@ -321,26 +322,6 @@ test "listen on a unix socket, pass file descriptor" {
     };
     defer server.socket.close(io);
 
-    const cmsg_alignment = switch (builtin.os.tag) {
-        .driverkit,
-        .ios,
-        .maccatalyst,
-        .macos,
-        .tvos,
-        .visionos,
-        .watchos,
-        => 4,
-        else => @sizeOf(usize),
-    };
-
-    const cmsghdr_aligned_len = comptime mem.alignForward(usize, @sizeOf(std.posix.cmsghdr), cmsg_alignment);
-    const cmsghdr_align = @alignOf(std.posix.cmsghdr);
-    const fd_t_len = @sizeOf(std.posix.fd_t);
-
-    const cmsg_buf_len =
-        cmsghdr_aligned_len +
-        comptime mem.alignForward(usize, fd_t_len, cmsg_alignment);
-
     const S = struct {
         fn clientFn(path: []const u8, file_path: []const u8) !void {
             const temp_file = try Io.Dir.cwd().createFile(io, file_path, .{});
@@ -350,16 +331,16 @@ test "listen on a unix socket, pass file descriptor" {
             var stream = try server_path.connect(io);
             defer stream.close(io);
 
-            var cmsg_buf: [cmsg_buf_len]u8 align(cmsghdr_align) = @splat(0);
+            var cmsg_buf: [net.cmsg.space(@sizeOf(posix.fd_t))]u8 align(Io.net.cmsg_align) = @splat(0);
 
-            const header_ptr: *std.posix.cmsghdr = @ptrCast(&cmsg_buf);
-            header_ptr.* = .{
-                .len = @intCast(cmsghdr_aligned_len + fd_t_len),
-                .level = std.posix.SOL.SOCKET,
-                .type = std.posix.SCM.RIGHTS,
+            const header: *align(Io.net.cmsg_align) posix.cmsghdr = @ptrCast(&cmsg_buf);
+            header.* = .{
+                .len = net.cmsg.len(@sizeOf(posix.fd_t)),
+                .level = posix.SOL.SOCKET,
+                .type = posix.SCM.RIGHTS,
             };
 
-            const fds = mem.bytesAsSlice(std.posix.fd_t, cmsg_buf[cmsghdr_aligned_len..]);
+            const fds: []posix.fd_t = @ptrCast(net.cmsg.data(header));
             fds[0] = temp_file.handle;
 
             var stream_writer = stream.writer(io, &.{});
@@ -376,27 +357,26 @@ test "listen on a unix socket, pass file descriptor" {
     var stream = try server.accept(io);
     defer stream.close(io);
 
-    var control_buf: [32]u8 align(cmsghdr_align) = undefined;
+    var control_buf: [32]u8 align(Io.net.cmsg_align) = undefined;
     var buf: [16]u8 = undefined;
     var stream_reader = stream.readerWithControl(io, &.{}, &control_buf);
 
     const n = try stream_reader.interface.readSliceShort(&buf);
-    const cmsg_buf = stream_reader.controlSlice();
 
     try testing.expect(!stream_reader.control_truncated); // The control buffer should be big enough to receive the entire control message
 
     try testing.expectEqual(12, n);
     try testing.expectEqualStrings("Hello world!", buf[0..n]);
 
-    try testing.expect(cmsg_buf.len >= cmsghdr_aligned_len + fd_t_len);
+    var it = stream_reader.controlIterator();
+    const control = it.next() orelse return error.TestUnexpectedResult;
+    try testing.expectEqual(null, it.next());
 
-    const header_ptr: *const std.posix.cmsghdr = @ptrCast(@alignCast(cmsg_buf));
+    try testing.expectEqual(net.cmsg.len(@sizeOf(posix.fd_t)), control.header.len);
+    try testing.expectEqual(posix.SOL.SOCKET, control.header.level);
+    try testing.expectEqual(posix.SCM.RIGHTS, control.header.type);
 
-    try testing.expectEqual(cmsghdr_aligned_len + fd_t_len, header_ptr.len);
-    try testing.expectEqual(std.posix.SOL.SOCKET, header_ptr.level);
-    try testing.expectEqual(std.posix.SCM.RIGHTS, header_ptr.type);
-
-    const fds = mem.bytesAsSlice(std.posix.fd_t, cmsg_buf[cmsghdr_aligned_len..]);
+    const fds: []posix.fd_t = @ptrCast(control.data);
 
     const temp_file: Io.File = .{
         .handle = fds[0],

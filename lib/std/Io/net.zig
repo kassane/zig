@@ -1378,7 +1378,7 @@ pub const Stream = struct {
     pub const Reader = struct {
         io: Io,
         interface: Io.Reader,
-        control_buffer: []u8,
+        control_buffer: []align(cmsg_align) u8,
         control_len: usize,
         control_truncated: bool,
         stream: Stream,
@@ -1391,7 +1391,12 @@ pub const Stream = struct {
         }
 
         /// Same as `init`, but also provides a buffer for storing control data.
-        pub fn initWithControl(stream: Stream, io: Io, buffer: []u8, control_buffer: []u8) Reader {
+        pub fn initWithControl(
+            stream: Stream,
+            io: Io,
+            buffer: []u8,
+            control_buffer: []align(cmsg_align) u8,
+        ) Reader {
             return .{
                 .io = io,
                 .interface = .{
@@ -1442,9 +1447,14 @@ pub const Stream = struct {
             return result.data_len;
         }
 
-        /// Get buffered control data.
-        pub fn controlSlice(r: *const Reader) []u8 {
+        /// Access raw buffered control data.
+        pub fn controlSlice(r: *const Reader) []align(cmsg_align) u8 {
             return r.control_buffer[0..r.control_len];
+        }
+
+        /// Iterate over buffered control messages.
+        pub fn controlIterator(r: *const Reader) cmsg.Iterator {
+            return .{ .control = r.controlSlice() };
         }
 
         /// Clear buffered control data.
@@ -1542,13 +1552,65 @@ pub const Stream = struct {
     }
 
     /// Same as `reader`, but also provides a buffer for storing control data.
-    pub fn readerWithControl(stream: Stream, io: Io, buffer: []u8, control_buffer: []u8) Reader {
+    pub fn readerWithControl(
+        stream: Stream,
+        io: Io,
+        buffer: []u8,
+        control_buffer: []align(cmsg_align) u8,
+    ) Reader {
         return .initWithControl(stream, io, buffer, control_buffer);
     }
 
     pub fn writer(stream: Stream, io: Io, buffer: []u8) Writer {
         return .init(stream, io, buffer);
     }
+};
+
+pub const cmsg_align = if (@TypeOf(std.posix.cmsg_align) == void) 1 else std.posix.cmsg_align;
+/// Utility Functions for interacting with POSIX socket control messages.
+/// See also https://pubs.opengroup.org/onlinepubs/9799919799/basedefs/sys_socket.h.html
+pub const cmsg = struct {
+    const cmsghdr = std.posix.cmsghdr;
+
+    /// Equivalent to `CMSG_SPACE` in C.
+    pub fn space(data_len: usize) usize {
+        return std.mem.alignForward(usize, @sizeOf(cmsghdr), cmsg_align) +
+            std.mem.alignForward(usize, data_len, cmsg_align);
+    }
+
+    /// Equivalent to `CMSG_LEN` in C.
+    pub fn len(data_len: @FieldType(cmsghdr, "len")) @TypeOf(data_len) {
+        return std.mem.alignForward(@TypeOf(data_len), @sizeOf(cmsghdr), cmsg_align) + data_len;
+    }
+
+    /// Equivalent to `CMSG_DATA` in C.
+    pub fn data(header: *align(cmsg_align) cmsghdr) []align(cmsg_align) u8 {
+        const bytes: [*]u8 = @ptrCast(header);
+        return @alignCast(bytes[0..header.len][std.mem.alignForward(usize, @sizeOf(cmsghdr), cmsg_align)..]);
+    }
+
+    /// Equivalent to `CMSG_FIRSTHDR` and `CMSG_NXTHDR` in C.
+    pub const Iterator = struct {
+        control: []align(cmsg_align) u8,
+
+        pub const Message = struct {
+            header: *cmsghdr,
+            data: []align(cmsg_align) u8,
+        };
+
+        pub fn next(it: *Iterator) ?Message {
+            if (it.control.len < @sizeOf(cmsghdr)) return null;
+            const header: *align(cmsg_align) cmsghdr = @ptrCast(it.control.ptr);
+            if (it.control.len < header.len) return null;
+            const next_header = std.mem.alignForward(usize, header.len, cmsg_align);
+            if (it.control.len < next_header) {
+                it.control = &.{};
+            } else {
+                it.control = @alignCast(it.control[next_header..]);
+            }
+            return .{ .header = header, .data = data(header) };
+        }
+    };
 };
 
 pub const Server = struct {
