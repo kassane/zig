@@ -1183,7 +1183,6 @@ fn netReceive(
     handle: net.Socket.Handle,
     message_buffer: []net.IncomingMessage,
     data_buffer: []u8,
-    control_buffer: []u8,
     flags: net.ReceiveFlags,
     timeout: Io.Timeout,
 ) struct { ?net.Socket.ReceiveTimeoutError, usize } {
@@ -1192,7 +1191,6 @@ fn netReceive(
     _ = handle;
     _ = message_buffer;
     _ = data_buffer;
-    _ = control_buffer;
     _ = flags;
     _ = timeout;
     @panic("TODO");

@@ -2555,8 +2555,8 @@ fn operate(userdata: ?*anyopaque, operation: Io.Operation) Io.Cancelable!Io.Oper
         .device_io_control => |*o| return .{ .device_io_control = try deviceIoControl(o) },
         .net_receive => |*o| return .{ .net_receive = o: {
             if (!have_networking) break :o .{ error.NetworkDown, 0 };
-            if (is_windows) break :o netReceiveWindows(t, o.socket_handle, o.message_buffer, o.data_buffer, o.control_buffer, o.flags);
-            netReceiveOnePosix(o.socket_handle, &o.message_buffer[0], o.data_buffer, o.control_buffer, o.flags, false) catch |err| switch (err) {
+            if (is_windows) break :o netReceiveWindows(t, o.socket_handle, o.message_buffer, o.data_buffer, o.flags);
+            netReceivePosix(o.socket_handle, &o.message_buffer[0], o.data_buffer, o.flags, false) catch |err| switch (err) {
                 error.Canceled => |e| return e,
                 error.WouldBlock => unreachable,
                 else => |e| break :o .{ e, 0 },
@@ -2825,11 +2825,9 @@ fn batchAwaitConcurrent(userdata: ?*anyopaque, b: *Io.Batch, timeout: Io.Timeout
                 .device_io_control => |o| try poll_storage.add(o.file.handle, posix.POLL.IN | posix.POLL.OUT | posix.POLL.ERR),
                 .net_receive => |*o| nb: {
                     var data_i: usize = 0;
-                    var control_i: usize = 0;
                     const result: Io.Operation.Result = .{ .net_receive = for (o.message_buffer, 0..) |*msg, msg_i| {
                         const remaining_data_buffer = o.data_buffer[data_i..];
-                        const remaining_control_buffer = o.control_buffer[control_i..];
-                        netReceiveOnePosix(o.socket_handle, msg, remaining_data_buffer, remaining_control_buffer, o.flags, true) catch |err| switch (err) {
+                        netReceivePosix(o.socket_handle, msg, remaining_data_buffer, o.flags, true) catch |err| switch (err) {
                             error.Canceled => |e| return e,
                             error.WouldBlock => {
                                 if (msg_i != 0) break .{ null, msg_i };
@@ -2839,7 +2837,6 @@ fn batchAwaitConcurrent(userdata: ?*anyopaque, b: *Io.Batch, timeout: Io.Timeout
                             else => |e| break .{ e, 0 },
                         };
                         data_i += msg.data.len;
-                        control_i += msg.control.len;
                     } else .{ null, o.message_buffer.len } };
                     switch (b.completed.tail) {
                         .none => b.completed.head = index,
@@ -3282,7 +3279,7 @@ fn batchDrainSubmittedWindows(t: *Threaded, b: *Io.Batch, concurrency: bool) (Io
                 // TODO integrate with overlapped I/O or equivalent to avoid this error
                 if (concurrency) return error.ConcurrencyUnavailable;
                 batchCompleteBlockingWindows(b, operation_userdata, .{
-                    .net_receive = netReceiveWindows(t, o.socket_handle, o.message_buffer, o.data_buffer, o.control_buffer, o.flags),
+                    .net_receive = netReceiveWindows(t, o.socket_handle, o.message_buffer, o.data_buffer, o.flags),
                 });
             },
             .net_send => |*o| {
@@ -13233,11 +13230,10 @@ fn netSendManyPosix(
     }
 }
 
-fn netReceiveOnePosix(
+fn netReceivePosix(
     socket_handle: net.Socket.Handle,
     message: *net.IncomingMessage,
     data_buffer: []u8,
-    control_buffer: []u8,
     flags: net.ReceiveFlags,
     nonblocking: bool,
 ) (net.Socket.ReceiveError || error{WouldBlock})!void {
@@ -13260,24 +13256,22 @@ fn netReceiveOnePosix(
         .namelen = @sizeOf(PosixAddress),
         .iov = (&iov)[0..1],
         .iovlen = 1,
-        .control = control_buffer.ptr,
-        .controllen = @intCast(control_buffer.len),
+        .control = message.control.ptr,
+        .controllen = @intCast(message.control.len),
         .flags = 0,
     };
 
     const syscall = try Syscall.start();
     while (true) {
         const rc = posix.system.recvmsg(socket_handle, &msg, posix_flags);
-        const rc_control = msg.controllen;
         switch (posix.errno(rc)) {
             .SUCCESS => {
                 syscall.finish();
                 const data = data_buffer[0..@intCast(rc)];
-                const control = control_buffer[0..@intCast(rc_control)];
                 message.* = .{
                     .from = addressFromPosix(&storage),
                     .data = data,
-                    .control = control,
+                    .control = if (msg.control) |ptr| @as([*]u8, @ptrCast(ptr))[0..msg.controllen] else message.control,
                     .flags = .{
                         .eor = (msg.flags & posix.MSG.EOR) != 0,
                         .trunc = (msg.flags & posix.MSG.TRUNC) != 0,
@@ -13318,12 +13312,8 @@ fn netReceiveWindows(
     socket_handle: net.Socket.Handle,
     message_buffer: []net.IncomingMessage,
     data_buffer: []u8,
-    control_buffer: []u8,
     flags: net.ReceiveFlags,
 ) struct { ?net.Socket.ReceiveError, usize } {
-    // Windows doesn't have the concept of control/ancillary data.
-    _ = control_buffer;
-
     t.netReceiveOneWindows(socket_handle, &message_buffer[0], data_buffer, flags) catch |err|
         return .{ err, 0 };
     return .{ null, 1 };
