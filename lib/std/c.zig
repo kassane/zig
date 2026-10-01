@@ -3373,6 +3373,19 @@ pub const Sigaction = switch (native_os) {
             restorer: ?*const fn () callconv(.c) void = null,
             mask: sigset_t,
         } else common_linux_Sigaction,
+        .sparc64 => if (builtin.abi == .gnu) extern struct {
+            pub const handler_fn = *align(1) const fn (SIG) callconv(.c) void;
+            pub const sigaction_fn = *const fn (SIG, *const siginfo_t, ?*anyopaque) callconv(.c) void;
+
+            handler: extern union {
+                handler: ?handler_fn,
+                sigaction: ?sigaction_fn,
+            },
+            mask: sigset_t,
+            __glibc_reserved0: c_int = 0,
+            flags: c_uint,
+            restorer: ?*const fn () callconv(.c) void = null,
+        } else common_linux_Sigaction,
         else => common_linux_Sigaction,
     },
     .emscripten => emscripten.Sigaction,
