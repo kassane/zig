@@ -316,72 +316,6 @@ fn addLanesAll(
     }
 }
 
-/// Apply Keccak-p[1600,12] to a single state (byte representation)
-fn keccakP(state: *[200]u8) void {
-    @setEvalBranchQuota(10000);
-    var lanes: [5][5]u64 = undefined;
-
-    // Load state into lanes
-    inline for (0..5) |x| {
-        inline for (0..5) |y| {
-            lanes[x][y] = load64(state[8 * (x + 5 * y) ..]);
-        }
-    }
-
-    // Apply 12 rounds
-    var round: usize = 0;
-    while (round < 12) : (round += 2) {
-        inline for (0..2) |i| {
-            // θ
-            var C: [5]u64 = undefined;
-            inline for (0..5) |x| {
-                C[x] = lanes[x][0] ^ lanes[x][1] ^ lanes[x][2] ^ lanes[x][3] ^ lanes[x][4];
-            }
-            var D: [5]u64 = undefined;
-            inline for (0..5) |x| {
-                D[x] = C[(x + 4) % 5] ^ std.math.rotl(u64, C[(x + 1) % 5], 1);
-            }
-            inline for (0..5) |x| {
-                inline for (0..5) |y| {
-                    lanes[x][y] ^= D[x];
-                }
-            }
-
-            // ρ and π
-            var current = lanes[1][0];
-            var px: usize = 1;
-            var py: usize = 0;
-            inline for (0..24) |t| {
-                const temp = lanes[py][(2 * px + 3 * py) % 5];
-                const rot_amount = ((t + 1) * (t + 2) / 2) % 64;
-                lanes[py][(2 * px + 3 * py) % 5] = std.math.rotl(u64, current, @as(u6, @intCast(rot_amount)));
-                current = temp;
-                const temp_x = py;
-                py = (2 * px + 3 * py) % 5;
-                px = temp_x;
-            }
-
-            // χ
-            inline for (0..5) |y| {
-                const T = [5]u64{ lanes[0][y], lanes[1][y], lanes[2][y], lanes[3][y], lanes[4][y] };
-                inline for (0..5) |x| {
-                    lanes[x][y] = T[x] ^ (~T[(x + 1) % 5] & T[(x + 2) % 5]);
-                }
-            }
-
-            // ι
-            lanes[0][0] ^= RC[round + i];
-        }
-    }
-
-    // Store lanes back to state
-    inline for (0..5) |x| {
-        inline for (0..5) |y| {
-            store64(lanes[x][y], state[8 * (x + 5 * y) ..]);
-        }
-    }
-}
-
 /// Apply Keccak-p[1600,12] to a single state (u64 lane representation)
 fn keccakPLanes(lanes: *[25]u64) void {
     @setEvalBranchQuota(10000);
@@ -439,38 +373,12 @@ fn turboShakeMultiSliceToBuffer(
     separation_byte: u8,
     output: []u8,
 ) void {
-    var state: [200]u8 = @splat(0);
-    var state_pos: usize = 0;
+    const StateType = if (rate == TurboSHAKE128State.block_length) TurboSHAKE128State else TurboSHAKE256State;
+    comptime assert(StateType.block_length == rate);
 
-    // Absorb all bytes from the multi-slice view
-    const total = view.totalLen();
-    var pos: usize = 0;
-    while (pos < total) {
-        state[state_pos] ^= view.getByte(pos);
-        state_pos += 1;
-        pos += 1;
-
-        if (state_pos == rate) {
-            keccakP(&state);
-            state_pos = 0;
-        }
-    }
-
-    // Add separation byte and padding
-    state[state_pos] ^= separation_byte;
-    state[rate - 1] ^= 0x80;
-    keccakP(&state);
-
-    // Squeeze
-    var out_offset: usize = 0;
-    while (out_offset < output.len) {
-        const chunk = @min(rate, output.len - out_offset);
-        @memcpy(output[out_offset..][0..chunk], state[0..chunk]);
-        out_offset += chunk;
-        if (out_offset < output.len) {
-            keccakP(&state);
-        }
-    }
+    var state = StateType.init(.{ .delim = separation_byte });
+    for (view.slices) |slice| state.update(slice);
+    state.final(output);
 }
 
 /// Generic allocating TurboSHAKE
