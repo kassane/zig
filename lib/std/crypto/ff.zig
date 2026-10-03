@@ -1084,7 +1084,11 @@ pub fn Modulus(comptime max_bits: comptime_int) type {
 }
 
 fn valueBarrier(x: Limb) Limb {
-    if (@inComptime() or builtin.zig_backend == .stage2_c) return x;
+    if (@inComptime()) return x;
+    switch (builtin.zig_backend) {
+        .stage2_c, .stage2_wasm => return x,
+        else => {},
+    }
     return asm (""
         : [ret] "=r" (-> Limb),
         : [x] "0" (x),
