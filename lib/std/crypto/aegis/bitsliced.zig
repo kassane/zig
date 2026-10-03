@@ -205,7 +205,7 @@ pub fn State128X(comptime degree: u7) type {
             }) };
             const input = packRate(nonce_block, key_block);
             for (0..10) |_| {
-                for (&state.words, context_mask) |*w, m| w.* ^= m;
+                inline for (&state.words, context_mask) |*w, m| w.* ^= m;
                 state.update(&input);
             }
             return state;
@@ -214,7 +214,7 @@ pub fn State128X(comptime degree: u7) type {
         fn update(state: *State, input: *const Aes.Bitsliced) void {
             var st1 = state.words;
             Aes.round(&st1);
-            for (&state.words, st1, input) |*w, r, in| {
+            inline for (&state.words, st1, input) |*w, r, in| {
                 w.* ^= (((r & V.mask(0xfe)) >> 1) | ((r & V.mask(0x01)) << 7)) ^ in;
             }
         }
@@ -225,7 +225,7 @@ pub fn State128X(comptime degree: u7) type {
 
         fn keystream(state: *const State) [2][4]Word {
             var z: Aes.Bitsliced = undefined;
-            for (&z, &state.words) |*zw, x| {
+            inline for (&z, &state.words) |*zw, x| {
                 zw.* = ((x & V.mask(0x02)) << 6) ^ ((x & V.mask(0x40)) << 1) ^
                     (((x & V.mask(0x20)) << 2) & ((x & V.mask(0x10)) << 3)) ^
                     ((x & V.mask(0x20)) >> 2) ^ ((x & V.mask(0x04)) << 1) ^
@@ -354,7 +354,7 @@ pub fn State256X(comptime degree: u7) type {
             };
             for (0..4) |_| {
                 for (&inputs) |*input| {
-                    for (&state.words, context_mask) |*w, m| w.* ^= m;
+                    inline for (&state.words, context_mask) |*w, m| w.* ^= m;
                     state.update(input);
                 }
             }
@@ -364,7 +364,7 @@ pub fn State256X(comptime degree: u7) type {
         fn update(state: *State, input: *const Aes.Bitsliced) void {
             var st1 = state.words;
             Aes.round(&st1);
-            for (&state.words, st1, input) |*w, r, in| {
+            inline for (&state.words, st1, input) |*w, r, in| {
                 w.* ^= (((r & V.mask(0xf8)) >> 1) | ((r & V.mask(0x04)) << 5)) ^ in;
             }
         }
@@ -375,7 +375,7 @@ pub fn State256X(comptime degree: u7) type {
 
         fn keystream(state: *const State) [4]Word {
             var z: Aes.Bitsliced = undefined;
-            for (&z, &state.words) |*zw, x| {
+            inline for (&z, &state.words) |*zw, x| {
                 zw.* = ((x & V.mask(0x40)) << 1) ^ ((x & V.mask(0x08)) << 4) ^
                     ((x & V.mask(0x04)) << 5) ^
                     (((x & V.mask(0x20)) << 2) & ((x & V.mask(0x10)) << 3));
