@@ -6,6 +6,7 @@ const process = std.process;
 const Allocator = std.mem.Allocator;
 const Color = std.zig.Color;
 const fatal = std.process.fatal;
+const Serializer = std.zon.Serializer;
 
 const usage_fmt =
     \\Usage: zig fmt [file]...
@@ -23,7 +24,7 @@ const usage_fmt =
     \\  --ast-check            Run zig ast-check on every file
     \\  --exclude [file]       Exclude file or directory from formatting
     \\  --zon                  Treat all input files as ZON, regardless of file extension
-    \\  --complexity           Print a complexity report for each file as well as total
+    \\  --stats                Print aggregated statistics in ZON format to stdout
     \\
     \\
 ;
@@ -39,10 +40,16 @@ const Fmt = struct {
     io: Io,
     out_buffer: std.Io.Writer.Allocating,
     stdout_writer: *Io.File.Writer,
+    serializer: Serializer,
+    root_struct: Serializer.Struct,
 
-    complexity: bool,
+    stats: bool,
     total_tokens: u64,
     total_nodes: u64,
+    /// Count per token tag index
+    token_stats: []u64,
+    /// Count per node tag index
+    node_stats: []u64,
 
     const SeenMap = std.AutoHashMap(Io.File.INode, void);
 };
@@ -53,7 +60,7 @@ pub fn run(gpa: Allocator, arena: Allocator, io: Io, args: []const []const u8) !
     var check_flag = false;
     var check_ast_flag = false;
     var force_zon = false;
-    var complexity = false;
+    var stats = false;
 
     var input_files = std.array_list.Managed([]const u8).init(gpa);
     defer input_files.deinit();
@@ -84,8 +91,8 @@ pub fn run(gpa: Allocator, arena: Allocator, io: Io, args: []const []const u8) !
                     check_flag = true;
                 } else if (mem.eql(u8, arg, "--ast-check")) {
                     check_ast_flag = true;
-                } else if (mem.eql(u8, arg, "--complexity")) {
-                    complexity = true;
+                } else if (mem.eql(u8, arg, "--stats")) {
+                    stats = true;
                 } else if (mem.eql(u8, arg, "--exclude")) {
                     if (i + 1 >= args.len) {
                         fatal("expected parameter after --exclude", .{});
@@ -185,12 +192,22 @@ pub fn run(gpa: Allocator, arena: Allocator, io: Io, args: []const []const u8) !
         .color = color,
         .out_buffer = .init(gpa),
         .stdout_writer = &stdout_writer,
-        .complexity = complexity,
+        .stats = stats,
         .total_tokens = 0,
         .total_nodes = 0,
+        .serializer = .{ .writer = &stdout_writer.interface },
+        .root_struct = undefined,
+        .token_stats = undefined,
+        .node_stats = undefined,
     };
     defer fmt.seen.deinit();
     defer fmt.out_buffer.deinit();
+
+    if (stats) {
+        fmt.root_struct = try fmt.serializer.beginStruct(.{});
+        fmt.token_stats = try arena.alloc(u64, @typeInfo(std.zig.Token.Tag).@"enum".field_names.len);
+        fmt.node_stats = try arena.alloc(u64, @typeInfo(std.zig.Ast.Node.Tag).@"enum".field_names.len);
+    }
 
     // Mark any excluded files/directories as already seen,
     // so that they are skipped later during actual processing
@@ -212,8 +229,10 @@ pub fn run(gpa: Allocator, arena: Allocator, io: Io, args: []const []const u8) !
         try fmtPath(&fmt, file_path, check_flag, Io.Dir.cwd(), file_path);
     }
 
-    if (complexity) {
-        std.log.info("total: tokens={d} nodes={d}", .{ fmt.total_tokens, fmt.total_nodes });
+    if (stats) {
+        try fmt.root_struct.field("tokens", fmt.total_tokens, .{});
+        try fmt.root_struct.field("nodes", fmt.total_nodes, .{});
+        try fmt.root_struct.end();
     }
 
     try fmt.stdout_writer.flush();
@@ -357,8 +376,13 @@ fn fmtPathFile(
         }
     }
 
-    if (fmt.complexity) {
-        std.log.info("{s}: tokens={d} nodes={d}", .{ file_path, tree.tokens.len, tree.nodes.len });
+    var zon_struct: Serializer.Struct = undefined;
+
+    if (fmt.stats) {
+        zon_struct = try fmt.root_struct.beginStructField(file_path, .{});
+        try zon_struct.field("tokens", tree.tokens.len, .{});
+        try zon_struct.field("nodes", tree.nodes.len, .{});
+
         fmt.total_tokens += tree.tokens.len;
         fmt.total_nodes += tree.nodes.len;
     }
@@ -370,20 +394,24 @@ fn fmtPathFile(
     tree.render(gpa, &fmt.out_buffer.writer, .{}) catch |err| switch (err) {
         error.WriteFailed, error.OutOfMemory => return error.OutOfMemory,
     };
-    if (mem.eql(u8, fmt.out_buffer.written(), source_code))
-        return;
+    if (!mem.eql(u8, fmt.out_buffer.written(), source_code)) {
+        if (check_mode) {
+            fmt.any_error = true;
+        } else {
+            var af = try dir.createFileAtomic(io, sub_path, .{ .permissions = stat.permissions, .replace = true });
+            defer af.deinit(io);
 
-    if (check_mode) {
-        try fmt.stdout_writer.interface.print("{s}\n", .{file_path});
-        fmt.any_error = true;
-    } else {
-        var af = try dir.createFileAtomic(io, sub_path, .{ .permissions = stat.permissions, .replace = true });
-        defer af.deinit(io);
-
-        try af.file.writeStreamingAll(io, fmt.out_buffer.written());
-        try af.replace(io);
-        try fmt.stdout_writer.interface.print("{s}\n", .{file_path});
+            try af.file.writeStreamingAll(io, fmt.out_buffer.written());
+            try af.replace(io);
+        }
+        if (fmt.stats) {
+            try zon_struct.field("dirty", true, .{});
+        } else {
+            try fmt.stdout_writer.interface.print("{s}\n", .{file_path});
+        }
     }
+
+    if (fmt.stats) try zon_struct.end();
 }
 
 /// Provided for debugging/testing purposes; unused by the compiler.
