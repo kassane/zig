@@ -239,11 +239,47 @@ pub fn run(gpa: Allocator, arena: Allocator, io: Io, args: []const []const u8) !
 
     if (fmt.stats) |stats| {
         if (stats.files > 1) {
-            try stats.root_struct.field("files", stats.files, .{});
-            try stats.root_struct.field("tokens", stats.tokens, .{});
-            try stats.root_struct.field("nodes", stats.nodes, .{});
+            var agg_struct = try stats.root_struct.beginStructField("aggregate", .{});
+            try agg_struct.field("file_count", stats.files, .{});
+            try agg_struct.field("token_count", stats.tokens, .{});
+            try agg_struct.field("node_count", stats.nodes, .{});
+
+            const token_names = @typeInfo(std.zig.Token.Tag).@"enum".field_names;
+            const node_names = @typeInfo(std.zig.Ast.Node.Tag).@"enum".field_names;
+
+            var token_order: [token_names.len]usize = undefined;
+            var node_order: [node_names.len]usize = undefined;
+            {
+                for (&token_order, 0..) |*elem, i| elem.* = i;
+                std.mem.sortContext(0, token_names.len, @as(SortContext, .{
+                    .stats = stats.token_stats,
+                    .order = &token_order,
+                }));
+                var tokens_struct = try agg_struct.beginStructField("tokens", .{});
+                for (&token_order) |i| {
+                    const n = stats.token_stats[i];
+                    if (n != 0) try tokens_struct.field(token_names[i], n, .{});
+                }
+                try tokens_struct.end();
+            }
+            {
+                for (&node_order, 0..) |*elem, i| elem.* = i;
+                std.mem.sortContext(0, node_names.len, @as(SortContext, .{
+                    .stats = stats.node_stats,
+                    .order = &node_order,
+                }));
+                var nodes_struct = try agg_struct.beginStructField("nodes", .{});
+                for (&node_order) |i| {
+                    const n = stats.node_stats[i];
+                    if (n != 0) try nodes_struct.field(node_names[i], n, .{});
+                }
+                try nodes_struct.end();
+            }
+
+            try agg_struct.end();
         }
         try stats.root_struct.end();
+        try fmt.stdout_writer.interface.writeByte('\n');
     }
 
     try fmt.stdout_writer.flush();
@@ -413,19 +449,6 @@ fn fmtPathFile(
             node_stats[@backingInt(tag)] += 1;
         }
 
-        const SortContext = struct {
-            stats: []const u64,
-            order: []usize,
-
-            pub fn lessThan(this: @This(), a_index: usize, b_index: usize) bool {
-                return this.stats[this.order[b_index]] < this.stats[this.order[a_index]];
-            }
-
-            pub fn swap(this: @This(), a_index: usize, b_index: usize) void {
-                std.mem.swap(usize, &this.order[a_index], &this.order[b_index]);
-            }
-        };
-
         {
             for (&token_order, 0..) |*elem, i| elem.* = i;
             std.mem.sortContext(0, token_names.len, @as(SortContext, .{
@@ -435,7 +458,7 @@ fn fmtPathFile(
             var s = try zon_struct.beginStructField("tokens", .{});
             for (&token_order) |i| {
                 const n = token_stats[i];
-                if (n != 0) try zon_struct.field(token_names[i], n, .{});
+                if (n != 0) try s.field(token_names[i], n, .{});
             }
             try s.end();
         }
@@ -449,13 +472,14 @@ fn fmtPathFile(
             var s = try zon_struct.beginStructField("nodes", .{});
             for (&node_order) |i| {
                 const n = node_stats[i];
-                if (n != 0) try zon_struct.field(node_names[i], n, .{});
+                if (n != 0) try s.field(node_names[i], n, .{});
             }
             try s.end();
         }
 
         stats.tokens += tree.tokens.len;
         stats.nodes += tree.nodes.len;
+        stats.files += 1;
     }
 
     // As a heuristic, we make enough capacity for the same as the input source.
@@ -484,6 +508,19 @@ fn fmtPathFile(
 
     if (fmt.stats != null) try zon_struct.end();
 }
+
+const SortContext = struct {
+    stats: []const u64,
+    order: []usize,
+
+    pub fn lessThan(this: @This(), a_index: usize, b_index: usize) bool {
+        return this.stats[this.order[b_index]] < this.stats[this.order[a_index]];
+    }
+
+    pub fn swap(this: @This(), a_index: usize, b_index: usize) void {
+        std.mem.swap(usize, &this.order[a_index], &this.order[b_index]);
+    }
+};
 
 /// Provided for debugging/testing purposes; unused by the compiler.
 pub fn main(init: process.Init) !void {
