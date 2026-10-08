@@ -40,18 +40,22 @@ const Fmt = struct {
     io: Io,
     out_buffer: std.Io.Writer.Allocating,
     stdout_writer: *Io.File.Writer,
+    stats: ?*Stats,
+
+    const SeenMap = std.AutoHashMap(Io.File.INode, void);
+};
+
+const Stats = struct {
     serializer: Serializer,
     root_struct: Serializer.Struct,
 
-    stats: bool,
-    total_tokens: u64,
-    total_nodes: u64,
+    files: u32,
+    tokens: u64,
+    nodes: u64,
     /// Count per token tag index
     token_stats: []u64,
     /// Count per node tag index
     node_stats: []u64,
-
-    const SeenMap = std.AutoHashMap(Io.File.INode, void);
 };
 
 pub fn run(gpa: Allocator, arena: Allocator, io: Io, args: []const []const u8) !void {
@@ -60,7 +64,7 @@ pub fn run(gpa: Allocator, arena: Allocator, io: Io, args: []const []const u8) !
     var check_flag = false;
     var check_ast_flag = false;
     var force_zon = false;
-    var stats = false;
+    var enable_stats = false;
 
     var input_files = std.array_list.Managed([]const u8).init(gpa);
     defer input_files.deinit();
@@ -92,7 +96,7 @@ pub fn run(gpa: Allocator, arena: Allocator, io: Io, args: []const []const u8) !
                 } else if (mem.eql(u8, arg, "--ast-check")) {
                     check_ast_flag = true;
                 } else if (mem.eql(u8, arg, "--stats")) {
-                    stats = true;
+                    enable_stats = true;
                 } else if (mem.eql(u8, arg, "--exclude")) {
                     if (i + 1 >= args.len) {
                         fatal("expected parameter after --exclude", .{});
@@ -192,21 +196,25 @@ pub fn run(gpa: Allocator, arena: Allocator, io: Io, args: []const []const u8) !
         .color = color,
         .out_buffer = .init(gpa),
         .stdout_writer = &stdout_writer,
-        .stats = stats,
-        .total_tokens = 0,
-        .total_nodes = 0,
-        .serializer = .{ .writer = &stdout_writer.interface },
-        .root_struct = undefined,
-        .token_stats = undefined,
-        .node_stats = undefined,
+        .stats = null,
     };
     defer fmt.seen.deinit();
     defer fmt.out_buffer.deinit();
 
-    if (stats) {
-        fmt.root_struct = try fmt.serializer.beginStruct(.{});
-        fmt.token_stats = try arena.alloc(u64, @typeInfo(std.zig.Token.Tag).@"enum".field_names.len);
-        fmt.node_stats = try arena.alloc(u64, @typeInfo(std.zig.Ast.Node.Tag).@"enum".field_names.len);
+    if (enable_stats) {
+        const stats = try arena.create(Stats);
+        fmt.stats = stats;
+        stats.* = .{
+            .files = 0,
+            .tokens = 0,
+            .nodes = 0,
+            .serializer = .{ .writer = &stdout_writer.interface },
+            .root_struct = try stats.serializer.beginStruct(.{}),
+            .token_stats = try arena.alloc(u64, @typeInfo(std.zig.Token.Tag).@"enum".field_names.len),
+            .node_stats = try arena.alloc(u64, @typeInfo(std.zig.Ast.Node.Tag).@"enum".field_names.len),
+        };
+        @memset(stats.token_stats, 0);
+        @memset(stats.node_stats, 0);
     }
 
     // Mark any excluded files/directories as already seen,
@@ -229,10 +237,13 @@ pub fn run(gpa: Allocator, arena: Allocator, io: Io, args: []const []const u8) !
         try fmtPath(&fmt, file_path, check_flag, Io.Dir.cwd(), file_path);
     }
 
-    if (stats) {
-        try fmt.root_struct.field("tokens", fmt.total_tokens, .{});
-        try fmt.root_struct.field("nodes", fmt.total_nodes, .{});
-        try fmt.root_struct.end();
+    if (fmt.stats) |stats| {
+        if (stats.files > 1) {
+            try stats.root_struct.field("files", stats.files, .{});
+            try stats.root_struct.field("tokens", stats.tokens, .{});
+            try stats.root_struct.field("nodes", stats.nodes, .{});
+        }
+        try stats.root_struct.end();
     }
 
     try fmt.stdout_writer.flush();
@@ -378,13 +389,73 @@ fn fmtPathFile(
 
     var zon_struct: Serializer.Struct = undefined;
 
-    if (fmt.stats) {
-        zon_struct = try fmt.root_struct.beginStructField(file_path, .{});
-        try zon_struct.field("tokens", tree.tokens.len, .{});
-        try zon_struct.field("nodes", tree.nodes.len, .{});
+    if (fmt.stats) |stats| {
+        zon_struct = try stats.root_struct.beginStructField(file_path, .{});
 
-        fmt.total_tokens += tree.tokens.len;
-        fmt.total_nodes += tree.nodes.len;
+        try zon_struct.field("token_count", tree.tokens.len, .{});
+        try zon_struct.field("node_count", tree.nodes.len, .{});
+
+        const token_names = @typeInfo(std.zig.Token.Tag).@"enum".field_names;
+        const node_names = @typeInfo(std.zig.Ast.Node.Tag).@"enum".field_names;
+
+        var token_stats: [token_names.len]u64 = @splat(0);
+        var token_order: [token_names.len]usize = undefined;
+        var node_stats: [node_names.len]u64 = @splat(0);
+        var node_order: [node_names.len]usize = undefined;
+
+        for (tree.tokens.items(.tag)) |tag| {
+            stats.token_stats[@backingInt(tag)] += 1;
+            token_stats[@backingInt(tag)] += 1;
+        }
+
+        for (tree.nodes.items(.tag)) |tag| {
+            stats.node_stats[@backingInt(tag)] += 1;
+            node_stats[@backingInt(tag)] += 1;
+        }
+
+        const SortContext = struct {
+            stats: []const u64,
+            order: []usize,
+
+            pub fn lessThan(this: @This(), a_index: usize, b_index: usize) bool {
+                return this.stats[this.order[b_index]] < this.stats[this.order[a_index]];
+            }
+
+            pub fn swap(this: @This(), a_index: usize, b_index: usize) void {
+                std.mem.swap(usize, &this.order[a_index], &this.order[b_index]);
+            }
+        };
+
+        {
+            for (&token_order, 0..) |*elem, i| elem.* = i;
+            std.mem.sortContext(0, token_names.len, @as(SortContext, .{
+                .stats = &token_stats,
+                .order = &token_order,
+            }));
+            var s = try zon_struct.beginStructField("tokens", .{});
+            for (&token_order) |i| {
+                const n = token_stats[i];
+                if (n != 0) try zon_struct.field(token_names[i], n, .{});
+            }
+            try s.end();
+        }
+
+        {
+            for (&node_order, 0..) |*elem, i| elem.* = i;
+            std.mem.sortContext(0, node_names.len, @as(SortContext, .{
+                .stats = &node_stats,
+                .order = &node_order,
+            }));
+            var s = try zon_struct.beginStructField("nodes", .{});
+            for (&node_order) |i| {
+                const n = node_stats[i];
+                if (n != 0) try zon_struct.field(node_names[i], n, .{});
+            }
+            try s.end();
+        }
+
+        stats.tokens += tree.tokens.len;
+        stats.nodes += tree.nodes.len;
     }
 
     // As a heuristic, we make enough capacity for the same as the input source.
@@ -404,14 +475,14 @@ fn fmtPathFile(
             try af.file.writeStreamingAll(io, fmt.out_buffer.written());
             try af.replace(io);
         }
-        if (fmt.stats) {
+        if (fmt.stats != null) {
             try zon_struct.field("dirty", true, .{});
         } else {
             try fmt.stdout_writer.interface.print("{s}\n", .{file_path});
         }
     }
 
-    if (fmt.stats) try zon_struct.end();
+    if (fmt.stats != null) try zon_struct.end();
 }
 
 /// Provided for debugging/testing purposes; unused by the compiler.
