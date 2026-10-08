@@ -52,6 +52,7 @@ const Stats = struct {
     files: u32,
     tokens: u64,
     nodes: u64,
+    source_size: u64,
     /// Count per token tag index
     token_stats: []u64,
     /// Count per node tag index
@@ -208,6 +209,7 @@ pub fn run(gpa: Allocator, arena: Allocator, io: Io, args: []const []const u8) !
             .files = 0,
             .tokens = 0,
             .nodes = 0,
+            .source_size = 0,
             .serializer = .{ .writer = &stdout_writer.interface },
             .root_struct = try stats.serializer.beginStruct(.{}),
             .token_stats = try arena.alloc(u64, @typeInfo(std.zig.Token.Tag).@"enum".field_names.len),
@@ -243,6 +245,7 @@ pub fn run(gpa: Allocator, arena: Allocator, io: Io, args: []const []const u8) !
             try agg_struct.field("file_count", stats.files, .{});
             try agg_struct.field("token_count", stats.tokens, .{});
             try agg_struct.field("node_count", stats.nodes, .{});
+            try agg_struct.field("source_size", stats.source_size, .{});
 
             const token_names = @typeInfo(std.zig.Token.Tag).@"enum".field_names;
             const node_names = @typeInfo(std.zig.Ast.Node.Tag).@"enum".field_names;
@@ -430,6 +433,7 @@ fn fmtPathFile(
 
         try zon_struct.field("token_count", tree.tokens.len, .{});
         try zon_struct.field("node_count", tree.nodes.len, .{});
+        try zon_struct.field("source_size", stat.size, .{});
 
         const token_names = @typeInfo(std.zig.Token.Tag).@"enum".field_names;
         const node_names = @typeInfo(std.zig.Ast.Node.Tag).@"enum".field_names;
@@ -480,6 +484,7 @@ fn fmtPathFile(
         stats.tokens += tree.tokens.len;
         stats.nodes += tree.nodes.len;
         stats.files += 1;
+        stats.source_size += stat.size;
     }
 
     // As a heuristic, we make enough capacity for the same as the input source.
