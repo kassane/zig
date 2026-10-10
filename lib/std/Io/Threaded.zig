@@ -4221,8 +4221,10 @@ fn fileStatWindows(userdata: ?*anyopaque, file: File) File.StatError!File.Stat {
             break :reparse_point .unknown;
         } else if (info.BasicInformation.FileAttributes.DIRECTORY)
             .directory
-        else
-            .file,
+        else switch (try windowsGetFileDevice(file)) {
+            .NAMED_PIPE => .named_pipe,
+            else => .file,
+        },
         .atime = windows.fromSysTime(info.BasicInformation.LastAccessTime),
         .mtime = windows.fromSysTime(info.BasicInformation.LastWriteTime),
         .ctime = windows.fromSysTime(info.BasicInformation.ChangeTime),
