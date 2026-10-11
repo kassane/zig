@@ -29,10 +29,14 @@ comptime {
     // function for the GD and LD models. This function is unlikely to actually be used, since the
     // linker should be able to relax every TLS access to the LE model and therefore eliminate all
     // calls to this function, but that isn't guaranteed.
-    if (native_arch == .s390x)
-        symbol(&__tls_get_offset, "__tls_get_offset")
-    else
+    if (native_arch == .s390x) {
+        symbol(&__tls_get_offset, "__tls_get_offset");
+    } else {
         symbol(&__tls_get_addr, "__tls_get_addr");
+        if (native_arch == .x86) {
+            symbol(&___tls_get_addr, "___tls_get_addr");
+        }
+    }
 }
 
 /// Represents an ELF TLS variant.
@@ -738,6 +742,18 @@ fn __tls_get_addr(ti: *const TlsIndex) callconv(.c) *anyopaque {
         .II => @ptrFromInt(tp -% area_info.block.size),
     };
     return block[@intCast(ti.offset)..];
+}
+
+fn ___tls_get_addr() callconv(.naked) *anyopaque {
+    comptime assert(native_arch == .x86);
+
+    // We receive the `TlsIndex` pointer in eax.
+    comptime assert(@sizeOf(AbiTcb) + @sizeOf(ZigTcb) + @offsetOf(Dtv, "tls_block") == 12);
+    asm volatile (
+        \\ mov 4(%%eax), %%eax
+        \\ add %%gs:12, %%eax
+        \\ ret
+    );
 }
 
 fn __tls_get_offset() callconv(.naked) noreturn {
