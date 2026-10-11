@@ -33,6 +33,9 @@ comptime {
         symbol(&__tls_get_offset, "__tls_get_offset");
     } else {
         symbol(&__tls_get_addr, "__tls_get_addr");
+        if (native_arch == .m68k) {
+            symbol(&__m68k_read_tp, "__m68k_read_tp");
+        }
         if (native_arch == .x86) {
             symbol(&___tls_get_addr, "___tls_get_addr");
         }
@@ -722,6 +725,12 @@ inline fn mmap(length: usize) usize {
             0,
         });
     }
+}
+
+fn __m68k_read_tp() callconv(.c) ?*anyopaque {
+    comptime assert(native_arch == .m68k);
+
+    return @ptrFromInt(getThreadPointer());
 }
 
 const TlsIndex = switch (native_arch) {
