@@ -499,7 +499,7 @@ fn computeAreaDesc(phdrs: []elf.ElfN.Phdr) void {
     var block_size: usize = undefined;
 
     if (tls_phdr) |phdr| {
-        align_factor = phdr.@"align";
+        align_factor = @max(phdr.@"align", 1);
 
         // The effective size in memory is represented by `memsz`; the length of the data stored
         // in the `PT.TLS` segment is `filesz` and may be less than the former.
