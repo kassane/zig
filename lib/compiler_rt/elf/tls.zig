@@ -743,14 +743,14 @@ fn __tls_get_addr(ti: *const TlsIndex) callconv(.c) *anyopaque {
 
     assert(ti.module == 1); // The executable's module ID is always 1
     const tp = getThreadPointer();
-    const block: [*]u8 = switch (current_variant) {
-        .I_original => @ptrFromInt(tp -% area_info.abi_tcb.offset +% area_info.block.offset),
-        .I_modified => @ptrFromInt(tp -% current_tp_offset),
+    const block = switch (current_variant) {
+        .I_original => tp -% area_info.abi_tcb.offset +% area_info.block.offset,
+        .I_modified => tp -% current_tp_offset,
         // The `.I_original` approach would also work for `.II`, but there is an
         // alternative strategy which is one less operation:
-        .II => @ptrFromInt(tp -% area_info.block.size),
+        .II => tp -% area_info.abi_tcb.offset,
     };
-    return block[@intCast(ti.offset)..];
+    return @ptrFromInt(block +% current_dtv_offset +% @as(usize, @intCast(ti.offset)));
 }
 
 fn ___tls_get_addr() callconv(.naked) *anyopaque {
@@ -772,10 +772,10 @@ fn __tls_get_offset() callconv(.naked) noreturn {
     asm volatile (
         \\ la %%r1, 0(%%r12, %%r2)
         \\ lg %%r2, 8(%%r1)
-        \\ lgrl %%r0, %[block_size]
+        \\ lgrl %%r0, %[abi_tcb_offset]
         \\ sgr %%r2, %%r0
         \\ br %%r14
         :
-        : [block_size] "s" (&area_info.block.size),
+        : [abi_tcb_offset] "s" (&area_info.abi_tcb.offset),
     );
 }
