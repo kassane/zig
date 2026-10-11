@@ -158,30 +158,12 @@ const current_dtv_offset = switch (native_arch) {
 
 /// Per-thread storage for the ELF TLS ABI.
 const AbiTcb = switch (current_variant) {
-    .I_original, .I_modified => switch (native_arch) {
-        .aarch64,
-        .aarch64_be,
-        .alpha,
-        .arm,
-        .armeb,
-        .hppa,
-        .microblaze,
-        .microblazeel,
-        .sh,
-        .sheb,
-        .thumb,
-        .thumbeb,
-        .xtensa,
-        .xtensaeb,
-        => extern struct {
-            /// This is offset by `current_dtv_offset`.
-            dtv: usize,
-            _reserved: ?*anyopaque,
-        },
-        else => extern struct {
-            /// This is offset by `current_dtv_offset`.
-            dtv: usize,
-        },
+    .I_original => extern struct {
+        dtv: usize,
+        _reserved: ?*anyopaque,
+    },
+    .I_modified => extern struct {
+        dtv: usize,
     },
     .II => extern struct {
         /// This is self-referential.
