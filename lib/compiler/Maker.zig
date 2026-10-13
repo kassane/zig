@@ -1378,11 +1378,6 @@ fn configure(graph: *Graph, options: ConfigureOptions) !ScannedConfig {
                     return error.FailedButCacheIntact;
                 }
 
-                if (options.fetch_mode == .all) {
-                    _ = io.lockStderr(&.{}, .no_color) catch {};
-                    process.exit(0);
-                }
-
                 if (options.print_configuration == .tree) {
                     const NO_COLOR = EnvVar.NO_COLOR.isSet(&graph.environ_map);
                     const CLICOLOR_FORCE = EnvVar.CLICOLOR_FORCE.isSet(&graph.environ_map);
@@ -1394,6 +1389,11 @@ fn configure(graph: *Graph, options: ConfigureOptions) !ScannedConfig {
                         else => |e| return e,
                     };
                     try stdout_writer_allocation.flush();
+                    process.exit(0);
+                }
+
+                if (options.fetch_mode == .all) {
+                    _ = io.lockStderr(&.{}, .no_color) catch {};
                     process.exit(0);
                 }
 
