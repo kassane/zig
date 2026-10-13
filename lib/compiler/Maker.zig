@@ -103,8 +103,30 @@ const InstallPaths = struct {
 };
 
 const PrintNode = struct {
-    parent: ?*PrintNode,
+    parent: ?*const PrintNode,
     last: bool = false,
+
+    fn printPrefix(node: *const PrintNode, writer: *Writer, mode: Io.Terminal.Mode) Writer.Error!void {
+        const parent = node.parent orelse return;
+        if (parent.parent == null) return;
+        try printPrefix(parent, writer, mode);
+        if (parent.last) {
+            try writer.writeAll("   ");
+        } else {
+            try printTreeSibling(writer, mode);
+        }
+    }
+
+    fn printPrefixedChild(node: *const PrintNode, writer: *Writer, mode: Io.Terminal.Mode) Writer.Error!void {
+        try printPrefix(node, writer, mode);
+        if (node.parent != null) {
+            if (node.last) {
+                try printTreeChildLast(writer, mode);
+            } else {
+                try printTreeChild(writer, mode);
+            }
+        }
+    }
 };
 
 const ErrorStyle = enum {
@@ -127,7 +149,7 @@ const ErrorStyle = enum {
 };
 const MultilineErrors = enum { indent, newline, none };
 const Summary = enum { all, new, failures, line, none };
-const PrintConfiguration = enum { none, zon, path };
+const PrintConfiguration = enum { none, zon, path, tree };
 
 const GeneratedFile = struct {
     data: ?[]const u8,
@@ -363,6 +385,8 @@ pub fn main(init: process.Init.Minimal) !void {
                 override_local_cache_dir = nextArgOrFatal(args, &arg_i);
             } else if (mem.eql(u8, arg, "--pkg-dir")) {
                 override_pkg_dir = nextArgOrFatal(args, &arg_i);
+            } else if (mem.eql(u8, arg, "--print-tree")) {
+                print_configuration = .tree;
             } else if (mem.eql(u8, arg, "--fetch")) {
                 fetch_only = true;
             } else if (mem.cutPrefix(u8, arg, "--fetch=")) |rest| {
@@ -797,6 +821,7 @@ pub fn main(init: process.Init.Minimal) !void {
                     return cleanExit(io, &scanned_config);
                 },
                 .path => unreachable,
+                .tree => unreachable,
             }
 
             var maker: Maker = .{
@@ -1357,8 +1382,20 @@ fn configure(graph: *Graph, options: ConfigureOptions) !ScannedConfig {
                     return error.FailedButCacheIntact;
                 }
 
-                if (options.fetch_only) {
+                if (options.fetch_only or options.print_configuration == .tree) {
                     _ = io.lockStderr(&.{}, .no_color) catch {};
+                    if (options.print_configuration == .tree) {
+                        const NO_COLOR = EnvVar.NO_COLOR.isSet(&graph.environ_map);
+                        const CLICOLOR_FORCE = EnvVar.CLICOLOR_FORCE.isSet(&graph.environ_map);
+                        printPkgTree(.{
+                            .writer = initStdoutWriter(io),
+                            .mode = try .detect(io, .stdout(), NO_COLOR, CLICOLOR_FORCE),
+                        }, arena, &job_queue, &fetch) catch |err| switch (err) {
+                            error.WriteFailed => return stdout_writer_allocation.err.?,
+                            else => |e| return e,
+                        };
+                        try stdout_writer_allocation.flush();
+                    }
                     process.exit(0);
                 }
 
@@ -1641,6 +1678,7 @@ fn configure(graph: *Graph, options: ConfigureOptions) !ScannedConfig {
             process.exit(0);
         },
         .none, .zon => {},
+        .tree => unreachable,
     }
 
     const configuration = c: {
@@ -1676,6 +1714,72 @@ fn configure(graph: *Graph, options: ConfigureOptions) !ScannedConfig {
         .top_level_steps = top_level_steps,
         .path = configuration_path,
     };
+}
+
+fn printPkgTree(
+    terminal: Io.Terminal,
+    arena: Allocator,
+    job_queue: *const Fetch.JobQueue,
+    root_fetch: *const Fetch,
+) !void {
+    if (!root_fetch.have_manifest) return;
+    const names = root_fetch.manifest.dependencies.keys();
+    for (names, root_fetch.manifest.dependencies.values(), 0..) |name, *dep, i| {
+        var print_node: PrintNode = .{
+            .parent = null,
+            .last = i == names.len - 1,
+        };
+        try printPkgTreeChild(terminal, arena, job_queue, &print_node, name, dep.hash);
+    }
+}
+
+fn printPkgTreeChild(
+    terminal: Io.Terminal,
+    arena: Allocator,
+    job_queue: *const Fetch.JobQueue,
+    parent_print_node: *const PrintNode,
+    dep_name: []const u8,
+    opt_hash: ?[]const u8,
+) !void {
+    const w = terminal.writer;
+    try parent_print_node.printPrefixedChild(w, terminal.mode);
+    try w.writeAll(dep_name);
+
+    const hash = opt_hash orelse {
+        try terminal.setColor(.red);
+        try w.writeAll(" (missing hash)\n");
+        try terminal.setColor(.reset);
+        return;
+    };
+    try terminal.setColor(.dim);
+    try w.print(" {s}", .{hash});
+    try terminal.setColor(.reset);
+    const child_fetch = job_queue.table.get(.fromSlice(hash)) orelse {
+        try terminal.setColor(.red);
+        try w.writeAll(" (fetch failed)\n");
+        try terminal.setColor(.reset);
+        return;
+    };
+    switch (child_fetch.lazy_status) {
+        .eager, .available => {},
+        .unavailable => {
+            try terminal.setColor(.yellow);
+            try w.writeAll(" (not fetched)\n");
+            try terminal.setColor(.reset);
+            return;
+        },
+    }
+    try w.writeByte('\n');
+    if (!child_fetch.have_manifest) return;
+
+    const names = child_fetch.manifest.dependencies.keys();
+    for (names, child_fetch.manifest.dependencies.values(), 0..) |name, *dep, i| {
+        var print_node: PrintNode = .{
+            .parent = parent_print_node,
+            .last = i == names.len - 1,
+        };
+        try printPkgTreeChild(terminal, arena, job_queue, &print_node, name, dep.hash);
+    }
 }
 
 fn cmdFetch(gpa: Allocator, graph: *Graph, args: []const []const u8) !void {
@@ -2949,18 +3053,7 @@ fn printTreeStep(
         .failures => make_step.state == .success,
     };
     if (skip) return;
-    try printPrefix(parent_node, stderr);
-
-    if (parent_node.parent != null) {
-        if (parent_node.last) {
-            try printChildNodePrefix(stderr);
-        } else {
-            try writer.writeAll(switch (stderr.mode) {
-                .escape_codes => "\x1B\x28\x30\x74\x71\x1B\x28\x42 ", // ├─
-                else => "+- ",
-            });
-        }
-    }
+    try parent_node.printPrefixedChild(writer, stderr.mode);
 
     if (!first) try stderr.setColor(.dim);
 
@@ -3189,23 +3282,22 @@ fn printStepFailure(
     }
 }
 
-fn printPrefix(node: *PrintNode, stderr: Io.Terminal) !void {
-    const parent = node.parent orelse return;
-    const writer = stderr.writer;
-    if (parent.parent == null) return;
-    try printPrefix(parent, stderr);
-    if (parent.last) {
-        try writer.writeAll("   ");
-    } else {
-        try writer.writeAll(switch (stderr.mode) {
-            .escape_codes => "\x1B\x28\x30\x78\x1B\x28\x42  ", // │
-            else => "|  ",
-        });
-    }
+fn printTreeChild(writer: *Writer, mode: Io.Terminal.Mode) Writer.Error!void {
+    return writer.writeAll(switch (mode) {
+        .escape_codes => "\x1B\x28\x30\x74\x71\x1B\x28\x42 ", // ├─
+        else => "+- ",
+    });
 }
 
-fn printChildNodePrefix(stderr: Io.Terminal) !void {
-    try stderr.writer.writeAll(switch (stderr.mode) {
+fn printTreeSibling(writer: *Writer, mode: Io.Terminal.Mode) Writer.Error!void {
+    return writer.writeAll(switch (mode) {
+        .escape_codes => "\x1B\x28\x30\x78\x1B\x28\x42  ", // │
+        else => "|  ",
+    });
+}
+
+fn printTreeChildLast(writer: *Writer, mode: Io.Terminal.Mode) !void {
+    try writer.writeAll(switch (mode) {
         .escape_codes => "\x1B\x28\x30\x6d\x71\x1B\x28\x42 ", // └─
         else => "+- ",
     });
@@ -3325,7 +3417,7 @@ pub fn printErrorMessages(
         while (step_stack.pop()) |step_index| : (indent += 1) {
             if (indent > 0) {
                 try writer.splatByteAll(' ', (indent - 1) * 3);
-                try printChildNodePrefix(stderr);
+                try printTreeChildLast(writer, stderr.mode);
             }
 
             try writer.writeAll(step_index.ptr(c).name.slice(c));

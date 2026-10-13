@@ -388,6 +388,7 @@ const general_usage =
     \\    needed                     (Default) Lazy dependencies are fetched as needed
     \\    all                        Lazy dependencies are always fetched
     \\  --fork=[path], --fork [path] Override one or more projects from dependency tree
+    \\  --print-tree                 Write current state of package dependencies to stdout
     \\
     \\Advanced Options:
     \\  -freference-trace[=num]      How many lines of reference trace should be shown per compile error
@@ -404,7 +405,7 @@ const general_usage =
     \\      poisoned                 Don't cache the configuration
     \\      disallowed               Panics when cache would be poisoned
     \\      ignored                  A little poison never hurt anybody
-    \\  --print-configuration        Render configuration as .zon to stdout
+    \\  --print-configuration        Render configuration as .zon to stdout and exit
     \\  --print-configuration-path   Print the path to the binary configuration file to stdout
     \\  --build-id[=style]           At a minor link-time expense, embeds a build ID in binaries
     \\      fast                     8-byte non-cryptographic hash (COFF, ELF, WASM)
@@ -423,4 +424,3 @@ const general_usage =
     \\  --verbose-llvm-cpu-features  Enable compiler debug output for LLVM CPU features
     \\
 ;
-}
