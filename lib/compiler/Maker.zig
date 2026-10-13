@@ -149,7 +149,7 @@ const ErrorStyle = enum {
 };
 const MultilineErrors = enum { indent, newline, none };
 const Summary = enum { all, new, failures, line, none };
-const PrintConfiguration = enum { none, zon, path, tree };
+const PrintConfiguration = enum { none, zon, path, tree, stop };
 
 const GeneratedFile = struct {
     data: ?[]const u8,
@@ -300,7 +300,6 @@ pub fn main(init: process.Init.Minimal) !void {
     var cached_passthru_configure: std.ArrayList(u32) = .empty;
     var forks: std.ArrayList(Fork) = .empty;
     var system_pkg_dir_path: ?[]const u8 = null;
-    var fetch_only = false;
     var fetch_mode: Fetch.JobQueue.Mode = .needed;
     var debug_target: ?[]const u8 = null;
     var cache_poison: std.Build.Graph.CachePoison = .pure;
@@ -387,12 +386,10 @@ pub fn main(init: process.Init.Minimal) !void {
                 override_pkg_dir = nextArgOrFatal(args, &arg_i);
             } else if (mem.eql(u8, arg, "--print-tree")) {
                 print_configuration = .tree;
+            } else if (mem.eql(u8, arg, "--configure")) {
+                print_configuration = .stop;
             } else if (mem.eql(u8, arg, "--fetch")) {
-                fetch_only = true;
-            } else if (mem.cutPrefix(u8, arg, "--fetch=")) |rest| {
-                fetch_only = true;
-                fetch_mode = stringToEnum(Fetch.JobQueue.Mode, rest) orelse
-                    fatal("expected [needed|all] after \"--fetch=\", found {q}", .{rest});
+                fetch_mode = .all;
             } else if (mem.cutPrefix(u8, arg, "--fork=")) |rest| {
                 try forks.append(arena, .init(rest));
             } else if (mem.eql(u8, arg, "--fork")) {
@@ -619,7 +616,7 @@ pub fn main(init: process.Init.Minimal) !void {
         }
     }
 
-    const early_exit_mode = fetch_only or help_menu or steps_menu or print_configuration != .none;
+    const early_exit_mode = fetch_mode == .all or help_menu or steps_menu or print_configuration != .none;
     const server_mode = !early_exit_mode and (watch_flag or webui_listen != null or fuzz != null or listen);
 
     process.raiseFileDescriptorLimit();
@@ -793,7 +790,6 @@ pub fn main(init: process.Init.Minimal) !void {
             .parent_progress_node = main_progress_node,
             .fetch_mode = fetch_mode,
             .system_pkg_dir_path = system_pkg_dir_path,
-            .fetch_only = fetch_only,
             .print_configuration = print_configuration,
             .forks = forks.items,
             .src_files = &configure_source_files,
@@ -822,6 +818,7 @@ pub fn main(init: process.Init.Minimal) !void {
                 },
                 .path => unreachable,
                 .tree => unreachable,
+                .stop => return cleanExit(io, &scanned_config),
             }
 
             var maker: Maker = .{
@@ -1134,7 +1131,6 @@ const ConfigureOptions = struct {
     parent_progress_node: std.Progress.Node,
     fetch_mode: Fetch.JobQueue.Mode,
     system_pkg_dir_path: ?[]const u8,
-    fetch_only: bool,
     print_configuration: PrintConfiguration,
     forks: []Fork,
     src_files: *Cache.Manifest.SelfContainedFiles,
@@ -1382,20 +1378,22 @@ fn configure(graph: *Graph, options: ConfigureOptions) !ScannedConfig {
                     return error.FailedButCacheIntact;
                 }
 
-                if (options.fetch_only or options.print_configuration == .tree) {
+                if (options.fetch_mode == .all) {
                     _ = io.lockStderr(&.{}, .no_color) catch {};
-                    if (options.print_configuration == .tree) {
-                        const NO_COLOR = EnvVar.NO_COLOR.isSet(&graph.environ_map);
-                        const CLICOLOR_FORCE = EnvVar.CLICOLOR_FORCE.isSet(&graph.environ_map);
-                        printPkgTree(.{
-                            .writer = initStdoutWriter(io),
-                            .mode = try .detect(io, .stdout(), NO_COLOR, CLICOLOR_FORCE),
-                        }, arena, &job_queue, &fetch) catch |err| switch (err) {
-                            error.WriteFailed => return stdout_writer_allocation.err.?,
-                            else => |e| return e,
-                        };
-                        try stdout_writer_allocation.flush();
-                    }
+                    process.exit(0);
+                }
+
+                if (options.print_configuration == .tree) {
+                    const NO_COLOR = EnvVar.NO_COLOR.isSet(&graph.environ_map);
+                    const CLICOLOR_FORCE = EnvVar.CLICOLOR_FORCE.isSet(&graph.environ_map);
+                    printPkgTree(.{
+                        .writer = initStdoutWriter(io),
+                        .mode = try .detect(io, .stdout(), NO_COLOR, CLICOLOR_FORCE),
+                    }, arena, &job_queue, &fetch) catch |err| switch (err) {
+                        error.WriteFailed => return stdout_writer_allocation.err.?,
+                        else => |e| return e,
+                    };
+                    try stdout_writer_allocation.flush();
                     process.exit(0);
                 }
 
@@ -1677,7 +1675,7 @@ fn configure(graph: *Graph, options: ConfigureOptions) !ScannedConfig {
             _ = io.lockStderr(&.{}, .no_color) catch {};
             process.exit(0);
         },
-        .none, .zon => {},
+        .none, .zon, .stop => {},
         .tree => unreachable,
     }
 

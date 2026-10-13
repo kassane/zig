@@ -353,8 +353,8 @@ const general_usage =
     \\  --error-style [style]        Control how build errors are printed
     \\    verbose                    (Default) Report errors with full context
     \\    minimal                    Report errors after summary, excluding context like command lines
-    \\    verbose_clear              Like 'verbose', but clear the terminal at the start of each update
-    \\    minimal_clear              Like 'minimal', but clear the terminal at the start of each update
+    \\    verbose_clear              Like "verbose", but clear the terminal at the start of each update
+    \\    minimal_clear              Like "minimal", but clear the terminal at the start of each update
     \\  --multiline-errors [style]   Control how multi-line error messages are printed
     \\    indent                     (Default) Indent non-initial lines to align with initial line
     \\    newline                    Include a leading newline so that the error message is on its own lines
@@ -375,22 +375,21 @@ const general_usage =
     \\  --webui[=ip]                 Enable the web interface on the given IP address
     \\  --fuzz[=limit]               Continuously search for unit test failures with an optional 
     \\                               limit to the max number of iterations. The argument supports
-    \\                               an optional 'K', 'M', or 'G' suffix (e.g. '10K'). Implies
-    \\                               '--webui' when no limit is specified.
-    \\  --listen=-                   Enable the build server protocol on stdio
+    \\                               an optional 'K', 'M', or 'G' suffix (e.g. "10K"). Implies
+    \\                               "--webui" when no limit is specified.
     \\  --time-report                Force full rebuild and provide detailed information on
-    \\                               compilation time of Zig source code (implies '--webui')
+    \\                               compilation time of Zig source code (implies "--webui")
     \\  -fincremental                Enable incremental compilation
     \\  -fno-incremental             Disable incremental compilation
+    \\  --configure                  Exit after the configuration phase
     \\
     \\Package Management Options:
-    \\  --fetch[=mode]               Fetch dependency tree (optionally choose laziness) and exit
-    \\    needed                     (Default) Lazy dependencies are fetched as needed
-    \\    all                        Lazy dependencies are always fetched
+    \\  --fetch                      Fetch all dependencies including lazy ones; exit without configuration
     \\  --fork=[path], --fork [path] Override one or more projects from dependency tree
     \\  --print-tree                 Write current state of package dependencies to stdout
     \\
     \\Advanced Options:
+    \\  --listen=-                   Enable the build server protocol on stdio
     \\  -freference-trace[=num]      How many lines of reference trace should be shown per compile error
     \\  -fno-reference-trace         Disable reference trace
     \\  -fallow-so-scripts           Allows .so files to be GNU ld scripts
@@ -405,8 +404,8 @@ const general_usage =
     \\      poisoned                 Don't cache the configuration
     \\      disallowed               Panics when cache would be poisoned
     \\      ignored                  A little poison never hurt anybody
-    \\  --print-configuration        Render configuration as .zon to stdout and exit
-    \\  --print-configuration-path   Print the path to the binary configuration file to stdout
+    \\  --print-configuration        Render configuration as .zon to stdout. Implies "--configure"
+    \\  --print-configuration-path   Print the path to the binary configuration file to stdout.
     \\  --build-id[=style]           At a minor link-time expense, embeds a build ID in binaries
     \\      fast                     8-byte non-cryptographic hash (COFF, ELF, WASM)
     \\      sha1, tree               20-byte cryptographic hash (ELF, WASM)
