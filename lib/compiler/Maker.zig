@@ -1397,6 +1397,8 @@ fn configure(graph: *Graph, options: ConfigureOptions) !ScannedConfig {
                     process.exit(0);
                 }
 
+                try validateFingerprints(gpa, &job_queue);
+
                 // Create the dependencies.zig file for configurer to
                 // obtain via `@import("@dependencies")`.
                 {
@@ -1712,6 +1714,81 @@ fn configure(graph: *Graph, options: ConfigureOptions) !ScannedConfig {
         .top_level_steps = top_level_steps,
         .path = configuration_path,
     };
+}
+
+const ValidFingerprintKey = struct {
+    project_id: Package.ProjectId,
+    version: std.SemanticVersion,
+
+    const Context = struct {
+        pub fn hash(this: @This(), a: ValidFingerprintKey) u32 {
+            _ = this;
+            var hasher: std.hash.Wyhash = .init(a.project_id.fingerprint_id);
+            hasher.update(&a.project_id.padded_name);
+            hasher.update(@ptrCast((&a.version.major)[0..1]));
+            hasher.update(@ptrCast((&a.version.minor)[0..1]));
+            hasher.update(@ptrCast((&a.version.patch)[0..1]));
+            if (a.version.pre) |pre| hasher.update(pre);
+            return @truncate(hasher.final());
+        }
+        pub fn eql(this: @This(), a: ValidFingerprintKey, b: ValidFingerprintKey, i: usize) bool {
+            _ = this;
+            _ = i;
+            return a.project_id.eql(&b.project_id) and a.version.order(b.version) == .eq;
+        }
+    };
+};
+
+const ValidFingerprintTable = std.array_hash_map.Custom(
+    ValidFingerprintKey,
+    struct { fetch: *Fetch, pkg_hash: Package.Hash, printed: bool },
+    ValidFingerprintKey.Context,
+    true,
+);
+
+/// Ensure that the dependency tree did not have any fingerprint matches with the same semantic version but
+/// differing package hashes.
+fn validateFingerprints(gpa: Allocator, job_queue: *const Fetch.JobQueue) !void {
+    var any_errors = false;
+
+    var table: ValidFingerprintTable = .empty;
+    defer table.deinit(gpa);
+
+    for (job_queue.table.keys(), job_queue.table.values()) |pkg_hash, fetch| {
+        if (!fetch.have_manifest) continue;
+        const gop = try table.getOrPut(gpa, .{
+            .project_id = .init(fetch.manifest.name, fetch.manifest.id),
+            .version = fetch.manifest.version,
+        });
+        if (gop.found_existing) {
+            any_errors = true;
+            const fingerprint: Package.Fingerprint = .init(fetch.manifest.id, fetch.manifest.name);
+            const stripped_version: std.SemanticVersion = .{
+                .major = fetch.manifest.version.major,
+                .minor = fetch.manifest.version.minor,
+                .patch = fetch.manifest.version.patch,
+                .pre = fetch.manifest.version.pre,
+            };
+            if (!gop.value_ptr.printed) {
+                gop.value_ptr.printed = true;
+                log.err("contradictory hash for package with fingerprint 0x{x} and version {f}: {s}", .{
+                    fingerprint.int(), stripped_version, gop.value_ptr.pkg_hash.toSlice(),
+                });
+            }
+            log.err("contradictory hash for package with fingerprint 0x{x} and version {f}: {s}", .{
+                fingerprint.int(), stripped_version, pkg_hash.toSlice(),
+            });
+        } else {
+            gop.value_ptr.* = .{ .fetch = fetch, .pkg_hash = pkg_hash, .printed = false };
+        }
+    }
+    if (any_errors) {
+        log.info("potential cause: package ownership dispute", .{});
+        log.info("potential cause: maintainer neglected to bump version after making changes", .{});
+        log.info("potential cause: dependency on unreleased changes", .{});
+        log.info("hint: use --print-tree to visualize all package versions and hashes", .{});
+        return error.FailedButCacheIntact;
+    }
 }
 
 fn printPkgTree(
